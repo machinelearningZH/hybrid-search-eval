@@ -13,7 +13,6 @@
 ![Chart MRR](_imgs/01_mrr.png)
 ![Chart Latency](_imgs/02_latency.png)
 ![Chart Memory](_imgs/03_memory.png)
-![Chart Tradeoffs](_imgs/04_tradeoffs.png)
 
 > [!NOTE]
 > The charts above are from a sample evaluation using synthetic data. Actual results will vary based on the dataset and models used. Results do not reflect general performance of the models.
@@ -243,6 +242,8 @@ The evaluation generates the following visualization charts:
 3. **Embedding Latency**: Time taken to generate embeddings for all documents per model.
 4. **Memory Consumption**: RAM usage during model loading and embedding generation.
 5. **Model Tradeoffs**: Bubble chart showing quality vs latency vs memory tradeoffs. Bubble size indicates memory consumption. [Pareto-optimal](https://en.wikipedia.org/wiki/Pareto_front) models (best tradeoffs) are highlighted with gold edges. BM25 and API models without memory data are shown as squares.
+
+![Chart Tradeoffs](_imgs/04_tradeoffs.png)
 
 Note: Memory consumption is only tracked for local Hugging Face models, not for OpenRouter API models.
 
