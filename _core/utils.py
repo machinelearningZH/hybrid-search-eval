@@ -1744,3 +1744,463 @@ def create_memory_visualization(
         f"   ✓ Memory consumption visualization saved to: [green]{memory_output_path}[/green]"
     )
     plt.close()
+
+
+def create_tradeoff_visualization(
+    results: list[dict[str, Any]],
+    memory_data: dict[str, dict[str, float]],
+    output_dir: Path,
+    timestamp: str,
+    config: dict[str, Any],
+) -> None:
+    """Create bubble chart showing quality vs latency vs memory tradeoffs.
+
+    Generates a scatter plot where:
+    - X-axis: Embedding latency (ms per document)
+    - Y-axis: Retrieval quality (best MRR@k or configurable metric)
+    - Bubble size: Memory consumption (squares for BM25 baseline)
+    - Color: Model name (consistent with other charts)
+    - Pareto frontier: Highlighted optimal models
+
+    Each model+alpha configuration is shown as a separate point.
+    BM25 baseline is shown as a square at x=0 (no embedding latency).
+
+    Args:
+        results: List of evaluation result dictionaries
+        memory_data: Dictionary mapping model names to memory stats
+        output_dir: Directory where visualization will be saved
+        timestamp: Timestamp string for output filename
+        config: Configuration dictionary containing visualization settings
+    """
+    if not results:
+        console.print(
+            "\n   ⚠️  [yellow]Insufficient data for tradeoff visualization[/yellow]",
+            style="dim",
+        )
+        return
+
+    console.print(
+        "\n📊 Creating quality-latency-memory tradeoff visualization...",
+        style="bold cyan",
+    )
+
+    # Load visualization settings from config
+    viz = config.get("visualization", {})
+    FIG_SIZE_X = viz.get("fig_size_x", 16)
+    TITLE_SIZE = viz.get("title_size", 24)
+    AXIS_LABEL_SIZE = viz.get("axis_label_size", 9)
+    ROW_LABEL_SIZE = viz.get("row_label_size", 9)
+
+    df_full = pd.DataFrame(results)
+
+    # Create color palette from FULL results (same as other charts) for consistency
+    unique_models_all = df_full["model_short"].unique()
+    colors = sns.color_palette("tab10", n_colors=len(unique_models_all))
+    model_colors = {model: colors[i] for i, model in enumerate(unique_models_all)}
+
+    # Separate BM25 baseline and embedding models
+    df_bm25 = df_full[df_full["model"] == "BM25"].copy()
+    df = df_full[df_full["model"] != "BM25"].copy()
+
+    # Find the best quality metric column (prefer highest k MRR)
+    metric_cols = [col for col in df_full.columns if col.startswith("mrr@")]
+    if not metric_cols:
+        metric_cols = [col for col in df_full.columns if col.startswith("hit_rate@")]
+    if not metric_cols:
+        console.print(
+            "\n   ⚠️  [yellow]No quality metrics found for tradeoff visualization[/yellow]",
+            style="dim",
+        )
+        return
+
+    # Use the metric with highest k value
+    quality_metric = sorted(metric_cols, key=lambda x: int(x.split("@")[1]))[-1]
+
+    # Check if we have any embedding models with memory data
+    if df.empty and df_bm25.empty:
+        console.print(
+            "\n   ⚠️  [yellow]No models to visualize[/yellow]",
+            style="dim",
+        )
+        return
+
+    # Include ALL alpha configurations (not just best per model)
+    df_plot = df.copy()
+
+    # Add memory data for embedding models
+    if not df_plot.empty:
+        df_plot["memory_mb"] = df_plot["model_short"].map(
+            lambda m: memory_data.get(m, {}).get("peak_memory_mb", 0.0)
+        )
+        # Separate models with and without memory data
+        df_with_memory = df_plot[df_plot["memory_mb"] > 0].copy()
+        df_no_memory = df_plot[df_plot["memory_mb"] == 0].copy()  # OpenRouter models
+    else:
+        df_with_memory = pd.DataFrame()
+        df_no_memory = pd.DataFrame()
+
+    # Create figure with extra space for legend on the right
+    fig, ax = plt.subplots(figsize=(FIG_SIZE_X + 4, 10))
+
+    # Track all points for Pareto calculation (including BM25 and OpenRouter)
+    all_points = []
+
+    # Process embedding models WITH memory data (will be bubbles)
+    if not df_with_memory.empty:
+        # Scale bubble sizes (normalize memory to reasonable visual size)
+        min_memory = df_with_memory["memory_mb"].min()
+        max_memory = df_with_memory["memory_mb"].max()
+        # Scale to range [100, 2000] for bubble area
+        if max_memory > min_memory:
+            bubble_sizes = 100 + (df_with_memory["memory_mb"] - min_memory) / (
+                max_memory - min_memory
+            ) * 1900
+        else:
+            bubble_sizes = pd.Series([500] * len(df_with_memory), index=df_with_memory.index)
+
+        # Collect points for Pareto calculation
+        for idx, row in df_with_memory.iterrows():
+            all_points.append({
+                "idx": idx,
+                "quality": row[quality_metric],
+                "latency": row["avg_embed_time_ms"],
+                "memory": row["memory_mb"],
+                "model_short": row["model_short"],
+                "alpha": row["alpha"],
+                "is_bm25": False,
+                "is_api": False,  # Has memory data, not an API model
+                "size": bubble_sizes.loc[idx],
+            })
+    else:
+        min_memory = 0
+        max_memory = 0
+
+    # Process OpenRouter/API models WITHOUT memory data (will be colored squares)
+    for _, row in df_no_memory.iterrows():
+        all_points.append({
+            "idx": None,
+            "quality": row[quality_metric],
+            "latency": row["avg_embed_time_ms"],
+            "memory": 0.0,  # API models have no local memory footprint
+            "model_short": row["model_short"],
+            "alpha": row["alpha"],
+            "is_bm25": False,
+            "is_api": True,  # OpenRouter/API model
+            "size": 300,  # Fixed size for API model squares
+        })
+
+    # Add BM25 points (latency=0, memory=0)
+    for _, row in df_bm25.iterrows():
+        all_points.append({
+            "idx": None,
+            "quality": row[quality_metric],
+            "latency": 0.0,  # BM25 has no embedding latency
+            "memory": 0.0,   # BM25 has no memory footprint
+            "model_short": row["model_short"],
+            "alpha": row["alpha"],
+            "is_bm25": True,
+            "is_api": False,
+            "size": 300,  # Fixed size for BM25 squares
+        })
+
+    if not all_points:
+        console.print(
+            "\n   ⚠️  [yellow]No models with data for tradeoff visualization[/yellow]",
+            style="dim",
+        )
+        return
+
+    # Calculate Pareto frontier (configurations not dominated by any other)
+    # For Pareto: higher quality is better, lower latency is better, lower memory is better
+    def is_pareto_optimal(point: dict, all_pts: list[dict]) -> bool:
+        """Check if a point is Pareto optimal."""
+        for other in all_pts:
+            if other is point:
+                continue
+            # Check if 'other' dominates 'point'
+            # Dominates means: at least as good in all dimensions, strictly better in at least one
+            at_least_as_good = (
+                other["quality"] >= point["quality"]
+                and other["latency"] <= point["latency"]
+                and other["memory"] <= point["memory"]
+            )
+            strictly_better = (
+                other["quality"] > point["quality"]
+                or other["latency"] < point["latency"]
+                or other["memory"] < point["memory"]
+            )
+            if at_least_as_good and strictly_better:
+                return False
+        return True
+
+    for point in all_points:
+        point["is_pareto"] = is_pareto_optimal(point, all_points)
+
+    # Plot BM25 baseline as squares (matching style from other charts)
+    bm25_points = [p for p in all_points if p["is_bm25"]]
+    for point in bm25_points:
+        ax.scatter(
+            point["latency"],
+            point["quality"],
+            s=point["size"],
+            c="#D3D3D3",  # Light gray matching other charts
+            marker="s",  # Square marker for BM25
+            alpha=1.0,
+            edgecolors="#444444",  # Grey outline matching other charts
+            linewidths=1.0,
+            zorder=3,
+            hatch="//",  # Hatched pattern matching other charts
+        )
+
+    # Plot OpenRouter/API model points as colored squares (no memory data)
+    api_points = [p for p in all_points if p.get("is_api", False)]
+    for point in api_points:
+        ax.scatter(
+            point["latency"],
+            point["quality"],
+            s=point["size"],
+            c=[model_colors[point["model_short"]]],
+            marker="s",  # Square marker for API models (no memory)
+            alpha=0.9 if point["is_pareto"] else 0.6,
+            edgecolors="gold" if point["is_pareto"] else "gray",
+            linewidths=3 if point["is_pareto"] else 1.0,
+            zorder=5 if point["is_pareto"] else 3,
+        )
+
+    # Plot local embedding model points with memory data (bubbles)
+    # Non-BM25, non-API models (have memory data)
+    local_points = [p for p in all_points if not p["is_bm25"] and not p.get("is_api", False)]
+    
+    # Non-Pareto local embedding points
+    for point in [p for p in local_points if not p["is_pareto"]]:
+        ax.scatter(
+            point["latency"],
+            point["quality"],
+            s=point["size"],
+            c=[model_colors[point["model_short"]]],
+            alpha=0.4,
+            edgecolors="gray",
+            linewidths=1,
+        )
+
+    # Pareto local embedding points
+    for point in [p for p in local_points if p["is_pareto"]]:
+        ax.scatter(
+            point["latency"],
+            point["quality"],
+            s=point["size"],
+            c=[model_colors[point["model_short"]]],
+            alpha=0.9,
+            edgecolors="gold",
+            linewidths=3,
+            zorder=5,
+        )
+
+    # Add labels for all points (below the markers)
+    for point in all_points:
+        if point["is_bm25"]:
+            label = f"{point['model_short']}"
+        else:
+            label = f"{point['model_short']}\n(α={point['alpha']:.1f})"
+        if point["is_pareto"]:
+            if point["is_bm25"]:
+                label = f"★ {point['model_short']}"
+            else:
+                label = f"★ {point['model_short']}\n(α={point['alpha']:.1f})"
+        
+        # Calculate offset based on marker size (labels go below)
+        y_offset = -12 - (point["size"] / 300)  # Negative for below, closer to bubble
+        
+        ax.annotate(
+            label,
+            (point["latency"], point["quality"]),
+            textcoords="offset points",
+            xytext=(0, y_offset),
+            ha="center",
+            va="top",
+            fontsize=ROW_LABEL_SIZE + 2,  # Bigger font for model labels
+            fontweight="bold" if point["is_pareto"] else "normal",
+            zorder=10,  # Always on top of bubbles and lines
+        )
+
+    # Draw Pareto frontier line (connect Pareto-optimal points)
+    pareto_points = [p for p in all_points if p["is_pareto"]]
+    if len(pareto_points) > 1:
+        pareto_sorted = sorted(pareto_points, key=lambda p: p["latency"])
+        ax.plot(
+            [p["latency"] for p in pareto_sorted],
+            [p["quality"] for p in pareto_sorted],
+            "--",
+            color="gold",
+            alpha=0.7,
+            linewidth=2,
+            zorder=4,
+        )
+
+    # Add ideal zone indicator (top-left corner)
+    ax.annotate(
+        "← Better (faster)",
+        xy=(0.02, 0.5),
+        xycoords="axes fraction",
+        fontsize=AXIS_LABEL_SIZE,
+        alpha=0.5,
+        ha="left",
+    )
+    ax.annotate(
+        "↑ Better (higher quality)",
+        xy=(0.5, 0.98),
+        xycoords="axes fraction",
+        fontsize=AXIS_LABEL_SIZE,
+        alpha=0.5,
+        ha="center",
+    )
+
+    # Build legend elements
+    legend_elements = []
+
+    # Determine which models are API models (no memory) vs local models (have memory)
+    api_model_names = {p["model_short"] for p in all_points if p.get("is_api", False)}
+
+    # Add model color legend (only models present in the plot)
+    unique_models_in_plot = list(dict.fromkeys([p["model_short"] for p in all_points]))
+    for model in unique_models_in_plot:
+        # Use square for BM25 and API models, circle for local models with memory
+        is_bm25_model = model == "Baseline_BM25"
+        is_api_model = model in api_model_names
+        legend_elements.append(
+            plt.scatter(
+                [],
+                [],
+                s=150,
+                c="#D3D3D3" if is_bm25_model else [model_colors[model]],
+                marker="s" if (is_bm25_model or is_api_model) else "o",
+                alpha=0.8,
+                label=model,
+            )
+        )
+
+    # Add separator via empty entry
+    legend_elements.append(
+        plt.scatter([], [], s=0, c="white", label=" ")  # Empty spacer
+    )
+
+    # Add memory size legend bubbles (only if we have embedding models)
+    if max_memory > 0:
+        size_legend_values = [min_memory, (min_memory + max_memory) / 2, max_memory]
+        size_legend_sizes = [
+            100 + (v - min_memory) / (max_memory - min_memory) * 1900
+            if max_memory > min_memory
+            else 500
+            for v in size_legend_values
+        ]
+
+        for size, val in zip(size_legend_sizes, size_legend_values):
+            legend_elements.append(
+                plt.scatter(
+                    [],
+                    [],
+                    s=size,
+                    c="gray",
+                    alpha=0.5,
+                    label=f"{val:.0f} MB",
+                )
+            )
+
+        # Add separator via empty entry
+        legend_elements.append(
+            plt.scatter([], [], s=0, c="white", label=" ")  # Empty spacer
+        )
+
+    # Add BM25 indicator to legend
+    if bm25_points:
+        legend_elements.append(
+            plt.scatter(
+                [],
+                [],
+                s=200,
+                c="#D3D3D3",  # Light gray matching other charts
+                marker="s",
+                alpha=1.0,
+                edgecolors="#444444",
+                linewidths=1.0,
+                hatch="//",
+                label="■ BM25 (no memory)",
+            )
+        )
+
+    # Add API model indicator to legend (if any API models present)
+    if api_points:
+        legend_elements.append(
+            plt.scatter(
+                [],
+                [],
+                s=200,
+                c="gray",
+                marker="s",
+                alpha=0.6,
+                edgecolors="gray",
+                linewidths=1.0,
+                label="■ API (no memory)",
+            )
+        )
+
+    # Add Pareto indicator to legend
+    legend_elements.append(
+        plt.scatter(
+            [],
+            [],
+            s=200,
+            c="white",
+            edgecolors="gold",
+            linewidths=3,
+            label="★ Pareto Optimal",
+        )
+    )
+
+    # Place legend outside the plot on the right
+    ax.legend(
+        handles=legend_elements,
+        title="Models & Memory",
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        framealpha=0.9,
+        fontsize=ROW_LABEL_SIZE + 1,
+        title_fontsize=ROW_LABEL_SIZE + 2,
+        borderpad=1,
+        labelspacing=1.2,
+    )
+
+    # Labels and title
+    metric_label = quality_metric.upper().replace("@", " @")
+    ax.set_xlabel("Embedding Latency (ms per document)", fontsize=AXIS_LABEL_SIZE + 2)
+    ax.set_ylabel(metric_label, fontsize=AXIS_LABEL_SIZE + 2)
+    ax.set_title(
+        "Model Tradeoffs: Quality vs Latency vs Memory",
+        fontsize=TITLE_SIZE,
+        pad=20,
+    )
+
+    # Add document and query counts below the graph (left-aligned)
+    num_docs = df_full["num_documents"].iloc[0]
+    num_queries = df_full["num_queries"].iloc[0]
+    ax.text(
+        0,
+        -0.08,
+        f"{num_docs} documents, {num_queries} queries",
+        transform=ax.transAxes,
+        fontsize=AXIS_LABEL_SIZE,
+        va="top",
+        ha="left",
+    )
+
+    # Style adjustments
+    ax.grid(True, alpha=0.3)
+    ax.set_axisbelow(True)
+
+    plt.tight_layout()
+    tradeoff_output_path = output_dir / f"tradeoff_{timestamp}.png"
+    plt.savefig(tradeoff_output_path, dpi=300, bbox_inches="tight")
+    console.print(
+        f"   ✓ Tradeoff visualization saved to: [green]{tradeoff_output_path}[/green]"
+    )
+    plt.close()

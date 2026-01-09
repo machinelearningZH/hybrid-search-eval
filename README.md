@@ -13,6 +13,7 @@
 ![Chart MRR](_imgs/01_mrr.png)
 ![Chart Latency](_imgs/02_latency.png)
 ![Chart Memory](_imgs/03_memory.png)
+![Chart Tradeoffs](_imgs/04_tradeoffs.png)
 
 > [!NOTE]
 > The charts above are from a sample evaluation using synthetic data. Actual results will vary based on the dataset and models used. Results do not reflect general performance of the models.
@@ -240,9 +241,8 @@ The evaluation generates the following visualization charts:
 1. **MRR (Mean Reciprocal Rank)**: Search quality comparison across models and alpha configurations. MRR measures how high the first relevant document appears in results (1/rank).
 2. **Hit Rate (Success Rate)**: Percentage of queries where a relevant document was found in the top-k results. Useful for understanding "was any relevant result found?"
 3. **Embedding Latency**: Time taken to generate embeddings for all documents per model.
-4. **Memory Consumption**: RAM usage during model loading and embedding generation:
-   - **Peak Memory (MB)**: Total memory consumed during the embedding process (model + embeddings + overhead)
-   - **Model Memory (MB)**: Memory footprint of loading the model itself
+4. **Memory Consumption**: RAM usage during model loading and embedding generation.
+5. **Model Tradeoffs**: Bubble chart showing quality vs latency vs memory tradeoffs. Bubble size indicates memory consumption. [Pareto-optimal](https://en.wikipedia.org/wiki/Pareto_front) models (best tradeoffs) are highlighted with gold edges. BM25 and API models without memory data are shown as squares.
 
 Note: Memory consumption is only tracked for local Hugging Face models, not for OpenRouter API models.
 
@@ -364,7 +364,7 @@ Embeddings and evaluations are cached in `_cache_embeddings/` and `_cache_evals/
 - `generate_evals.py`: Main evaluation pipeline
 - `generate_queries.py`: LLM-based query generator
 - `download_mteb_datasets.py`: Download MTEB datasets from Hugging Face
-- `convert_to_mteb_format.py`: Convert legacy data to MTEB 2.x format
+- `list_retrieval_datasets.py`: List available MTEB retrieval datasets
 - `_configs/`: Configuration files
   - `config.yaml`: Default configuration
 - `_core/`: Core utilities (`utils.py`, `utils_prompts.py`)

@@ -40,6 +40,7 @@ from _core.utils import (
     calculate_hit,
     create_results_visualization,
     create_memory_visualization,
+    create_tradeoff_visualization,
     truncate_text_to_tokens,
     get_openrouter_embeddings,
     parse_model_configs,
@@ -87,12 +88,14 @@ atexit.register(cleanup_weaviate)
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+# Matplotlib styling
 plt.style.use("ggplot")
-
 params = {
     "text.color": (0.25, 0.25, 0.25),
+    "font.family": "sans-serif",
+    "axes.titlesize": 16,
+    "axes.labelsize": 12,
 }
-
 plt.rcParams.update(params)
 
 
@@ -1411,6 +1414,12 @@ def main() -> None:
         # Create memory consumption visualization (only if we have memory data)
         if memory_data:
             create_memory_visualization(memory_data, output_dir, timestamp, config)
+
+        # Create tradeoff visualization (quality vs latency vs memory)
+        if memory_data and all_results:
+            create_tradeoff_visualization(
+                all_results, memory_data, output_dir, timestamp, config
+            )
 
     finally:
         # Cleanup
