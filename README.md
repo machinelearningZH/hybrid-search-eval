@@ -39,6 +39,7 @@ This tool complements our existing [semantic search evaluation framework](https:
 ## Installation
 
 ```bash
+# Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh # macOS/Linux
 
 # Alternatively, for Windows:
