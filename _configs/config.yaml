@@ -52,6 +52,7 @@ embeddings:
     # potion-multilingual-128M: minishlab/potion-multilingual-128M
     # mdbr-leaf-ir: mongodb/mdbr-leaf-ir
     # mdbr-leaf-ir-asym: mongodb/mdbr-leaf-ir-asym
+    # luxical-one: DatologyAI/luxical-one-v1 # TODO: Wait until sentence-transformers supports this model and then enable
 
   # ColBERT late-interaction models (use pylate for multi-vector embeddings + MaxSim scoring)
   # These models produce token-level embeddings and use late interaction for scoring.

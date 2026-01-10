@@ -32,6 +32,7 @@ This tool complements our existing [semantic search evaluation framework](https:
 
 > [!IMPORTANT]
 > Documents are truncated to `max_document_tokens` for embedding (default: 512 tokens, configurable). This affects relevance for documents exceeding this limit, and results will likely differ from benchmarks that use full document text.
+> Sentence Transformers models are loaded with `trust_remote_code=True` to support custom architectures. Be aware of potential security implications when using untrusted models.
 
 ## Installation
 

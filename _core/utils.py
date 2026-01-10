@@ -639,7 +639,8 @@ class MTEBRetrievalData:
     MTEB 2.x Retrieval format:
     - corpus: DataFrame with columns ['id', 'text'] (optionally 'title')
     - queries: DataFrame with columns ['id', 'text'] (optionally 'instruction')
-    - qrels: DataFrame with columns ['query-id', 'corpus-id', 'score']
+    - qrels: DataFrame with columns ['query-id', 'corpus-id'] (optionally 'score')
+      If 'score' is missing, a default score of 1 is assumed (binary relevance).
 
     Attributes:
         corpus: DataFrame containing corpus documents
@@ -661,7 +662,8 @@ class MTEBRetrievalData:
         Args:
             corpus: DataFrame with columns ['id', 'text'] (optionally 'title')
             queries: DataFrame with columns ['id', 'text']
-            qrels: DataFrame with columns ['query-id', 'corpus-id', 'score']
+            qrels: DataFrame with columns ['query-id', 'corpus-id'] (optionally 'score')
+                   If 'score' is missing, a default score of 1 is assumed.
         """
         self.corpus = corpus
         self.queries = queries
@@ -684,9 +686,13 @@ class MTEBRetrievalData:
             raise ValueError("Queries must have 'id' and 'text' columns")
 
         # Qrels validation
-        required_qrels_cols = {"query-id", "corpus-id", "score"}
+        required_qrels_cols = {"query-id", "corpus-id"}
         if not required_qrels_cols.issubset(self.qrels.columns):
             raise ValueError(f"Qrels must have columns: {required_qrels_cols}")
+        
+        # Add default score of 1 if score column is missing (binary relevance)
+        if "score" not in self.qrels.columns:
+            self.qrels["score"] = 1
 
     def _build_dicts(self) -> None:
         """Build dictionary representations for fast lookup."""
@@ -786,10 +792,13 @@ def load_mteb_retrieval_data(
 ) -> MTEBRetrievalData:
     """Load MTEB 2.x retrieval format data from files.
 
+    Supports datasets with or without a 'score' column in qrels.
+    For datasets without scores (e.g., NanoBEIR), assumes binary relevance (score=1).
+
     Args:
         corpus_path: Path to corpus file (parquet or csv)
         queries_path: Path to queries file (parquet or csv)
-        qrels_path: Path to qrels file (parquet or csv)
+        qrels_path: Path to qrels file (parquet or csv with optional 'score' column)
 
     Returns:
         MTEBRetrievalData container with loaded data
