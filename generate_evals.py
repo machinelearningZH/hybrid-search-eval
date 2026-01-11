@@ -741,6 +741,37 @@ def main() -> None:
                         f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
                     )
                     continue
+                except ValueError as e:
+                    error_msg = str(e)
+                    # Check for ColBERT model loaded as SentenceTransformer
+                    if "MaxSim" in error_msg and "SimilarityFunction" in error_msg:
+                        console.print(
+                            f"\n❌ [bold red]ColBERT model misconfiguration detected![/bold red]"
+                        )
+                        console.print(
+                            f"   Model [cyan]'{model_id}'[/cyan] is a ColBERT late-interaction model."
+                        )
+                        console.print(
+                            "   It uses MaxSim scoring and cannot be loaded as a standard SentenceTransformer.\n"
+                        )
+                        console.print(
+                            "   [bold yellow]To fix this, move the model to the 'embeddings.colbert' section in your config.yaml:[/bold yellow]\n"
+                        )
+                        console.print(
+                            f"   [green]embeddings:\n     colbert:\n       {model_name}: {model_id}[/green]\n"
+                        )
+                        console.print(
+                            "   [dim]ColBERT models will then be loaded via PyLate with proper MaxSim support.[/dim]"
+                        )
+                    else:
+                        console.print(
+                            f"\n⚠️  [red bold]ValueError loading model '{model_id}':[/red bold]"
+                        )
+                        console.print(f"   [yellow]{error_msg[:500]}[/yellow]")
+                    console.print(
+                        f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
+                    )
+                    continue
                 except Exception as e:
                     # Catch any other unexpected errors during model loading
                     error_type = type(e).__name__

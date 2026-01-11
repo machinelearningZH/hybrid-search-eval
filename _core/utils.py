@@ -936,6 +936,39 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
     colbert_names = set(colbert_models.keys()) if colbert_models else set()
     or_names = set(openrouter_models.keys()) if openrouter_models else set()
 
+    # Known ColBERT model identifiers (substrings to check in model IDs)
+    # These models use late-interaction and MaxSim scoring, requiring pylate
+    known_colbert_patterns = [
+        "colbert",
+        "ColBERT",
+        "answerai-colbert",
+        "GTE-ModernColBERT",
+    ]
+
+    # Check if any HuggingFace models appear to be ColBERT models
+    for model_name, model_spec in hf_models.items():
+        model_id = model_spec if isinstance(model_spec, str) else model_spec.get("model", "")
+        is_likely_colbert = any(pattern.lower() in model_id.lower() for pattern in known_colbert_patterns)
+        if is_likely_colbert:
+            console.print(
+                f"\n⚠️  [bold yellow]WARNING: Potential ColBERT model in wrong section![/bold yellow]"
+            )
+            console.print(
+                f"   Model [cyan]'{model_name}'[/cyan] ([dim]{model_id}[/dim]) appears to be a ColBERT model."
+            )
+            console.print(
+                "   ColBERT models use late-interaction (MaxSim) scoring and must be loaded via PyLate."
+            )
+            console.print(
+                "   \n   [bold]Please move this model to the 'embeddings.colbert' section in your config:[/bold]"
+            )
+            console.print(
+                f"   [green]embeddings:\n     colbert:\n       {model_name}: {model_id}[/green]\n"
+            )
+            console.print(
+                "   [dim]If loaded under 'huggingface', it will fail with: 'MaxSim' is not a valid SimilarityFunction[/dim]\n"
+            )
+
     # Find names that appear in multiple providers
     all_names = [hf_names, colbert_names, or_names]
     duplicate_names: set[str] = set()
