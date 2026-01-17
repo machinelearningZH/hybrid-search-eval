@@ -10,6 +10,7 @@
 [![Current Version](https://img.shields.io/badge/version-0.1-green.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
 <a href="https://github.com/astral-sh/ruff"><img alt="linting - Ruff" class="off-glb" loading="lazy" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
 
+![Dashboard](_imgs/05_dashboard.png)
 ![Chart MRR](_imgs/01_mrr.png)
 ![Chart Latency](_imgs/02_latency.png)
 ![Chart Memory](_imgs/03_memory.png)
