@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport content="width=device-width, initial-scale=1.0">
+    <title>Evaluation Dashboard - {project_id}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .sort-arrow {{ opacity: 0.3; }}
+        .sort-arrow.active {{ opacity: 1; }}
+        .sort-arrow.asc::after {{ content: ' ▲'; }}
+        .sort-arrow.desc::after {{ content: ' ▼'; }}
+        th {{ cursor: pointer; user-select: none; }}
+        th:hover {{ background-color: rgba(59, 130, 246, 0.1); }}
+        .pareto-star {{ color: #fbbf24; text-shadow: 0 0 3px rgba(251, 191, 36, 0.5); }}
+        .metric-cell {{ font-variant-numeric: tabular-nums; }}
+        .highlight-row {{ background-color: rgba(251, 191, 36, 0.1); }}
+        .bar-bg {{ background-color: #e5e7eb; }}
+        .bar-fill {{ background-color: #3b82f6; transition: width 0.3s ease; }}
+        .bar-fill-pareto {{ background-color: #fbbf24; }}
+        tbody tr:hover {{ background-color: rgba(59, 130, 246, 0.05); }}
+        .tooltip {{ visibility: hidden; opacity: 0; transition: opacity 0.2s; }}
+        .has-tooltip:hover .tooltip {{ visibility: visible; opacity: 1; }}
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-full">
+        <!-- Header -->
+        <div class="mb-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">
+                🦁 Hybrid Search Evaluation Dashboard
+            </h1>
+            <p class="text-gray-600">
+                Project: <span class="font-semibold text-blue-600">{project_id}</span>
+                &nbsp;•&nbsp;
+                {num_docs:,} documents &nbsp;•&nbsp; {num_queries:,} queries
+                &nbsp;•&nbsp;
+                Generated: {formatted_timestamp}
+            </p>
+        </div>
+
+        <!-- Legend -->
+        <div class="bg-white rounded-lg shadow-sm p-4 mb-6">
+            <div class="flex flex-wrap gap-6 text-sm">
+                <div class="flex items-center gap-2">
+                    <span class="pareto-star text-xl">★</span>
+                    <span class="text-gray-700">Pareto Optimal (best tradeoff between quality and speed)</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="w-4 h-3 bar-fill rounded"></div>
+                    <span class="text-gray-700">Relative metric value</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-gray-500">Click column headers to sort</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="bg-white rounded-lg shadow-sm p-4 mb-6">
+            <div class="flex flex-wrap gap-4 items-center">
+                <div>
+                    <label class="text-sm font-medium text-gray-700 mr-2">Filter:</label>
+                    <input type="text" id="searchInput" placeholder="Search models..."
+                        class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="text-sm font-medium text-gray-700 mr-2">Show only Pareto:</label>
+                    <input type="checkbox" id="paretoFilter" class="rounded text-blue-600 focus:ring-blue-500">
+                </div>
+                <div class="ml-auto text-sm text-gray-500">
+                    Showing <span id="rowCount" class="font-semibold">0</span> configurations
+                </div>
+            </div>
+        </div>
+
+        <!-- Results Table -->
+        <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm" id="resultsTable">
+                    <thead class="bg-gray-100 border-b border-gray-200">
+                        <tr>
+                            <th class="px-4 py-3 text-left font-semibold text-gray-700" data-sort="is_pareto">
+                                <span class="sort-arrow"></span>
+                            </th>
+                            <th class="px-4 py-3 text-left font-semibold text-gray-700" data-sort="model_short">
+                                Model <span class="sort-arrow"></span>
+                            </th>
+                            <th class="px-4 py-3 text-left font-semibold text-gray-700" data-sort="alpha">
+                                Alpha <span class="sort-arrow"></span>
+                            </th>
+                            {metric_headers_html}
+                            <th class="px-4 py-3 text-left font-semibold text-gray-700 has-tooltip relative" data-sort="avg_embed_time_ms">
+                                Latency (ms/doc)
+                                <span class="sort-arrow"></span>
+                                <span class="tooltip absolute bg-gray-800 text-white text-xs rounded px-2 py-1 -top-8 left-0 whitespace-nowrap z-10">
+                                    Average embedding time per document
+                                </span>
+                            </th>
+                            <th class="px-4 py-3 text-left font-semibold text-gray-700 has-tooltip relative" data-sort="memory_mb">
+                                Memory (MB)
+                                <span class="sort-arrow"></span>
+                                <span class="tooltip absolute bg-gray-800 text-white text-xs rounded px-2 py-1 -top-8 left-0 whitespace-nowrap z-10">
+                                    Peak memory usage
+                                </span>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody" class="divide-y divide-gray-100">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="mt-6 text-center text-sm text-gray-500">Generated with the<br> 
+            <a href="https://github.com/machinelearningZH/hybrid-search-eval" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:text-blue-800 hover:underline">
+                Open Source «Hybrid Search Evaluation Tool» (MIT License)
+            </a><br>Canton Zurich, Switzerland
+        </div>
+    </div>
+
+    <script>
+        // Embedded data
+        const resultsData = {results_data_json};
+        const metricCols = {metric_cols_json};
+
+        // State
+        let sortColumn = '{initial_sort_column}';
+        let sortDirection = 'desc';
+        let filteredData = [...resultsData];
+
+        // Calculate min/max for each metric column for bar scaling
+        const metricRanges = {{}};
+        metricCols.forEach(col => {{
+            const values = resultsData.map(r => r[col]).filter(v => v !== null && v !== undefined);
+            metricRanges[col] = {{
+                min: Math.min(...values),
+                max: Math.max(...values)
+            }};
+        }});
+
+        // Also calculate ranges for latency and memory
+        const latencyValues = resultsData.map(r => r.avg_embed_time_ms).filter(v => v > 0);
+        const memoryValues = resultsData.map(r => r.memory_mb).filter(v => v > 0);
+        metricRanges['avg_embed_time_ms'] = {{
+            min: latencyValues.length ? Math.min(...latencyValues) : 0,
+            max: latencyValues.length ? Math.max(...latencyValues) : 1
+        }};
+        metricRanges['memory_mb'] = {{
+            min: memoryValues.length ? Math.min(...memoryValues) : 0,
+            max: memoryValues.length ? Math.max(...memoryValues) : 1
+        }};
+
+        function formatNumber(num, decimals = 4) {{
+            if (num === null || num === undefined) return '-';
+            if (num === 0) return '0';
+            if (Math.abs(num) < 0.0001) return num.toExponential(2);
+            return num.toFixed(decimals);
+        }}
+
+        function getBarWidth(value, col) {{
+            if (value === null || value === undefined) return 0;
+            const range = metricRanges[col];
+            if (!range || range.max === range.min) return 0;
+            return ((value - range.min) / (range.max - range.min)) * 100;
+        }}
+
+        function renderTable() {{
+            const tbody = document.getElementById('tableBody');
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const paretoOnly = document.getElementById('paretoFilter').checked;
+
+            // Filter data
+            filteredData = resultsData.filter(row => {{
+                const matchesSearch = row.model_short.toLowerCase().includes(searchTerm) ||
+                                     row.model.toLowerCase().includes(searchTerm);
+                const matchesPareto = !paretoOnly || row.is_pareto;
+                return matchesSearch && matchesPareto;
+            }});
+
+            // Sort data
+            filteredData.sort((a, b) => {{
+                let aVal = a[sortColumn];
+                let bVal = b[sortColumn];
+
+                // Handle booleans
+                if (typeof aVal === 'boolean') {{
+                    aVal = aVal ? 1 : 0;
+                    bVal = bVal ? 1 : 0;
+                }}
+
+                // Handle strings
+                if (typeof aVal === 'string') {{
+                    aVal = aVal.toLowerCase();
+                    bVal = bVal.toLowerCase();
+                }}
+
+                if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+                if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+                return 0;
+            }});
+
+            // Update row count
+            document.getElementById('rowCount').textContent = filteredData.length;
+
+            // Build HTML
+            let html = '';
+            filteredData.forEach(row => {{
+                const rowClass = row.is_pareto ? 'highlight-row' : '';
+                html += `<tr class="${{rowClass}}">`;
+
+                // Pareto star
+                html += `<td class="px-4 py-3 text-center">
+                    ${{row.is_pareto ? '<span class="pareto-star text-lg" title="Pareto Optimal">★</span>' : ''}}
+                </td>`;
+
+                // Model name
+                html += `<td class="px-4 py-3">
+                    <div class="font-medium text-gray-900">${{row.model_short}}</div>
+                    <div class="text-xs text-gray-500 truncate max-w-xs" title="${{row.model}}">${{row.model}}</div>
+                </td>`;
+
+                // Alpha
+                html += `<td class="px-4 py-3 metric-cell">${{row.alpha.toFixed(1)}}</td>`;
+
+                // Metric columns with bars
+                metricCols.forEach(col => {{
+                    const val = row[col];
+                    const barWidth = getBarWidth(val, col);
+                    const barClass = row.is_pareto ? 'bar-fill-pareto' : 'bar-fill';
+                    html += `<td class="px-4 py-3 metric-cell">
+                        <div class="flex items-center gap-2">
+                            <span class="w-16 text-right">${{formatNumber(val)}}</span>
+                            <div class="flex-1 bar-bg h-2 rounded overflow-hidden min-w-[60px]">
+                                <div class="${{barClass}} h-full rounded" style="width: ${{barWidth}}%"></div>
+                            </div>
+                        </div>
+                    </td>`;
+                }});
+
+                // Latency
+                const latencyBarWidth = row.avg_embed_time_ms > 0 ?
+                    getBarWidth(row.avg_embed_time_ms, 'avg_embed_time_ms') : 0;
+                html += `<td class="px-4 py-3 metric-cell">
+                    <div class="flex items-center gap-2">
+                        <span class="w-16 text-right">${{formatNumber(row.avg_embed_time_ms, 2)}}</span>
+                        <div class="flex-1 bar-bg h-2 rounded overflow-hidden min-w-[60px]">
+                            <div class="bar-fill h-full rounded" style="width: ${{latencyBarWidth}}%"></div>
+                        </div>
+                    </div>
+                </td>`;
+
+                // Memory
+                const memoryBarWidth = row.memory_mb > 0 ?
+                    getBarWidth(row.memory_mb, 'memory_mb') : 0;
+                html += `<td class="px-4 py-3 metric-cell">
+                    <div class="flex items-center gap-2">
+                        <span class="w-16 text-right">${{row.memory_mb > 0 ? formatNumber(row.memory_mb, 1) : '-'}}</span>
+                        <div class="flex-1 bar-bg h-2 rounded overflow-hidden min-w-[60px]">
+                            <div class="bar-fill h-full rounded" style="width: ${{memoryBarWidth}}%"></div>
+                        </div>
+                    </div>
+                </td>`;
+
+                html += '</tr>';
+            }});
+
+            tbody.innerHTML = html;
+
+            // Update sort indicators
+            document.querySelectorAll('th[data-sort]').forEach(th => {{
+                const arrow = th.querySelector('.sort-arrow');
+                arrow.classList.remove('active', 'asc', 'desc');
+                if (th.dataset.sort === sortColumn) {{
+                    arrow.classList.add('active', sortDirection);
+                }}
+            }});
+        }}
+
+        // Event listeners
+        document.querySelectorAll('th[data-sort]').forEach(th => {{
+            th.addEventListener('click', () => {{
+                const col = th.dataset.sort;
+                if (sortColumn === col) {{
+                    sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+                }} else {{
+                    sortColumn = col;
+                    // Default to desc for metrics (higher is better), asc for latency/memory
+                    sortDirection = ['avg_embed_time_ms', 'memory_mb', 'alpha'].includes(col) ? 'asc' : 'desc';
+                }}
+                renderTable();
+            }});
+        }});
+
+        document.getElementById('searchInput').addEventListener('input', renderTable);
+        document.getElementById('paretoFilter').addEventListener('change', renderTable);
+
+        // Initial render
+        renderTable();
+    </script>
+</body>
+</html>

@@ -689,7 +689,7 @@ class MTEBRetrievalData:
         required_qrels_cols = {"query-id", "corpus-id"}
         if not required_qrels_cols.issubset(self.qrels.columns):
             raise ValueError(f"Qrels must have columns: {required_qrels_cols}")
-        
+
         # Add default score of 1 if score column is missing (binary relevance)
         if "score" not in self.qrels.columns:
             self.qrels["score"] = 1
@@ -947,8 +947,12 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
 
     # Check if any HuggingFace models appear to be ColBERT models
     for model_name, model_spec in hf_models.items():
-        model_id = model_spec if isinstance(model_spec, str) else model_spec.get("model", "")
-        is_likely_colbert = any(pattern.lower() in model_id.lower() for pattern in known_colbert_patterns)
+        model_id = (
+            model_spec if isinstance(model_spec, str) else model_spec.get("model", "")
+        )
+        is_likely_colbert = any(
+            pattern.lower() in model_id.lower() for pattern in known_colbert_patterns
+        )
         if is_likely_colbert:
             console.print(
                 f"\n⚠️  [bold yellow]WARNING: Potential ColBERT model in wrong section![/bold yellow]"
@@ -1302,7 +1306,12 @@ def colbert_embeddings_exist(cache_key: str, embeddings_dir: Path) -> bool:
 
 
 def generate_eval_cache_key(
-    project_id: str, model_id: str, alpha: float, k: int, display_name: str = ""
+    project_id: str,
+    model_id: str,
+    alpha: float,
+    k: int,
+    display_name: str = "",
+    metric_k_values: dict[str, list[int]] | None = None,
 ) -> str:
     """Generate a unique cache key for evaluation results.
 
@@ -1313,6 +1322,8 @@ def generate_eval_cache_key(
         k: The top-k parameter
         display_name: Optional display name to disambiguate models with same model_id
                       (e.g., when same model is run via HuggingFace and OpenRouter)
+        metric_k_values: Optional dict of metric names to K value lists for cache
+                         invalidation when metrics config changes
 
     Returns:
         A hash-based cache key
@@ -1320,6 +1331,12 @@ def generate_eval_cache_key(
     # Create a deterministic key based on all eval parameters
     # Include display_name in hash to disambiguate same model_id used via different providers
     key_string = f"{project_id}_{model_id}_{display_name}_alpha{alpha}_k{k}"
+
+    # Include metric config in hash to invalidate cache when metrics change
+    if metric_k_values:
+        metrics_str = str(sorted((m, sorted(ks)) for m, ks in metric_k_values.items()))
+        key_string += f"_metrics{metrics_str}"
+
     # Use hash for cleaner filenames
     hash_suffix = hashlib.md5(key_string.encode()).hexdigest()[:8]
     # Use display name if provided, otherwise extract from model_id
@@ -1760,7 +1777,7 @@ def create_memory_visualization(
     max_memory = df_memory["peak_memory_mb"].max()
     # Ensure max_memory is positive for proper scaling
     max_memory = max(1.0, max_memory)  # Minimum 1 MB for proper label placement
-    
+
     for i, (_, row) in enumerate(df_memory.iterrows()):
         # Show both peak and model-only memory
         label_text = f"{row['peak_memory_mb']:.1f} MB"
@@ -1894,56 +1911,67 @@ def create_tradeoff_visualization(
         max_memory = df_with_memory["memory_mb"].max()
         # Scale to range [100, 2000] for bubble area
         if max_memory > min_memory:
-            bubble_sizes = 100 + (df_with_memory["memory_mb"] - min_memory) / (
-                max_memory - min_memory
-            ) * 1900
+            bubble_sizes = (
+                100
+                + (df_with_memory["memory_mb"] - min_memory)
+                / (max_memory - min_memory)
+                * 1900
+            )
         else:
-            bubble_sizes = pd.Series([500] * len(df_with_memory), index=df_with_memory.index)
+            bubble_sizes = pd.Series(
+                [500] * len(df_with_memory), index=df_with_memory.index
+            )
 
         # Collect points for Pareto calculation
         for idx, row in df_with_memory.iterrows():
-            all_points.append({
-                "idx": idx,
-                "quality": row[quality_metric],
-                "latency": row["avg_embed_time_ms"],
-                "memory": row["memory_mb"],
-                "model_short": row["model_short"],
-                "alpha": row["alpha"],
-                "is_bm25": False,
-                "is_api": False,  # Has memory data, not an API model
-                "size": bubble_sizes.loc[idx],
-            })
+            all_points.append(
+                {
+                    "idx": idx,
+                    "quality": row[quality_metric],
+                    "latency": row["avg_embed_time_ms"],
+                    "memory": row["memory_mb"],
+                    "model_short": row["model_short"],
+                    "alpha": row["alpha"],
+                    "is_bm25": False,
+                    "is_api": False,  # Has memory data, not an API model
+                    "size": bubble_sizes.loc[idx],
+                }
+            )
     else:
         min_memory = 0
         max_memory = 0
 
     # Process OpenRouter/API models WITHOUT memory data (will be colored squares)
     for _, row in df_no_memory.iterrows():
-        all_points.append({
-            "idx": None,
-            "quality": row[quality_metric],
-            "latency": row["avg_embed_time_ms"],
-            "memory": 0.0,  # API models have no local memory footprint
-            "model_short": row["model_short"],
-            "alpha": row["alpha"],
-            "is_bm25": False,
-            "is_api": True,  # OpenRouter/API model
-            "size": 300,  # Fixed size for API model squares
-        })
+        all_points.append(
+            {
+                "idx": None,
+                "quality": row[quality_metric],
+                "latency": row["avg_embed_time_ms"],
+                "memory": 0.0,  # API models have no local memory footprint
+                "model_short": row["model_short"],
+                "alpha": row["alpha"],
+                "is_bm25": False,
+                "is_api": True,  # OpenRouter/API model
+                "size": 300,  # Fixed size for API model squares
+            }
+        )
 
     # Add BM25 points (latency=0, memory=0)
     for _, row in df_bm25.iterrows():
-        all_points.append({
-            "idx": None,
-            "quality": row[quality_metric],
-            "latency": 0.0,  # BM25 has no embedding latency
-            "memory": 0.0,   # BM25 has no memory footprint
-            "model_short": row["model_short"],
-            "alpha": row["alpha"],
-            "is_bm25": True,
-            "is_api": False,
-            "size": 300,  # Fixed size for BM25 squares
-        })
+        all_points.append(
+            {
+                "idx": None,
+                "quality": row[quality_metric],
+                "latency": 0.0,  # BM25 has no embedding latency
+                "memory": 0.0,  # BM25 has no memory footprint
+                "model_short": row["model_short"],
+                "alpha": row["alpha"],
+                "is_bm25": True,
+                "is_api": False,
+                "size": 300,  # Fixed size for BM25 squares
+            }
+        )
 
     if not all_points:
         console.print(
@@ -2011,8 +2039,10 @@ def create_tradeoff_visualization(
 
     # Plot local embedding model points with memory data (bubbles)
     # Non-BM25, non-API models (have memory data)
-    local_points = [p for p in all_points if not p["is_bm25"] and not p.get("is_api", False)]
-    
+    local_points = [
+        p for p in all_points if not p["is_bm25"] and not p.get("is_api", False)
+    ]
+
     # Non-Pareto local embedding points
     for point in [p for p in local_points if not p["is_pareto"]]:
         ax.scatter(
@@ -2049,10 +2079,10 @@ def create_tradeoff_visualization(
                 label = f"★ {point['model_short']}"
             else:
                 label = f"★ {point['model_short']}\n(α={point['alpha']:.1f})"
-        
+
         # Calculate offset based on marker size (labels go below)
         y_offset = -12 - (point["size"] / 300)  # Negative for below, closer to bubble
-        
+
         ax.annotate(
             label,
             (point["latency"], point["quality"]),
@@ -2246,3 +2276,176 @@ def create_tradeoff_visualization(
         f"   ✓ Tradeoff visualization saved to: [green]{tradeoff_output_path}[/green]"
     )
     plt.close()
+
+
+def create_html_dashboard(
+    results: list[dict[str, Any]],
+    memory_data: dict[str, dict[str, float]],
+    output_dir: Path,
+    timestamp: str,
+    config: dict[str, Any],
+) -> None:
+    """Create an interactive HTML dashboard for evaluation results.
+
+    Generates a single-file HTML dashboard with:
+    - Sortable table of all metrics
+    - Star indicators for Pareto-optimal models
+    - Responsive design with Tailwind CSS
+
+    Args:
+        results: List of evaluation result dictionaries
+        memory_data: Dictionary mapping model names to memory stats
+        output_dir: Directory where HTML file will be saved
+        timestamp: Timestamp string for output filename
+        config: Configuration dictionary
+    """
+    if not results:
+        console.print(
+            "\n   ⚠️  [yellow]No evaluation results available; skipping HTML dashboard[/yellow]",
+            style="dim",
+        )
+        return
+
+    console.print("\n📊 Creating interactive HTML dashboard...", style="bold cyan")
+
+    df = pd.DataFrame(results)
+
+    # Find all metric columns
+    metric_cols = [col for col in df.columns if "@" in col]
+
+    # Calculate Pareto optimality for each row
+    # For Pareto: higher quality metrics are better, lower latency is better
+    def is_pareto_optimal(
+        row_idx: int, df: pd.DataFrame, metric_cols: list[str]
+    ) -> bool:
+        """Check if a row is Pareto optimal."""
+        row = df.iloc[row_idx]
+        for other_idx in range(len(df)):
+            if other_idx == row_idx:
+                continue
+            other = df.iloc[other_idx]
+
+            # Check if 'other' dominates 'row'
+            # For metrics: higher is better (skip NaN comparisons)
+            # For latency: lower is better
+            def safe_ge(a: float, b: float) -> bool:
+                """Safe greater-than-or-equal comparison handling NaN."""
+                if pd.isna(a) or pd.isna(b):
+                    return False
+                return a >= b
+
+            def safe_gt(a: float, b: float) -> bool:
+                """Safe greater-than comparison handling NaN."""
+                if pd.isna(a) or pd.isna(b):
+                    return False
+                return a > b
+
+            metrics_at_least_as_good = all(safe_ge(other[m], row[m]) for m in metric_cols)
+            latency_at_least_as_good = (
+                other["avg_embed_time_ms"] <= row["avg_embed_time_ms"]
+            )
+
+            metrics_strictly_better = any(safe_gt(other[m], row[m]) for m in metric_cols)
+            latency_strictly_better = (
+                other["avg_embed_time_ms"] < row["avg_embed_time_ms"]
+            )
+
+            if metrics_at_least_as_good and latency_at_least_as_good:
+                if metrics_strictly_better or latency_strictly_better:
+                    return False
+        return True
+
+    pareto_indices = set()
+    for idx in range(len(df)):
+        if is_pareto_optimal(idx, df, metric_cols):
+            pareto_indices.add(idx)
+
+    # Add memory data to dataframe
+    df["memory_mb"] = df["model_short"].map(
+        lambda m: memory_data.get(m, {}).get("peak_memory_mb", 0.0)
+    )
+
+    # Prepare data for JSON embedding
+    rows_data = []
+    for idx, row in df.iterrows():
+        row_dict = {
+            "model": row["model"],
+            "model_short": row["model_short"],
+            "alpha": row["alpha"],
+            "avg_embed_time_ms": row["avg_embed_time_ms"],
+            "total_embed_time_ms": row["total_embed_time_ms"],
+            "num_queries": row["num_queries"],
+            "num_documents": row["num_documents"],
+            "memory_mb": row["memory_mb"],
+            "is_pareto": idx in pareto_indices,
+        }
+        # Add all metric columns (handle NaN values from missing columns)
+        for col in metric_cols:
+            val = row.get(col) if col in row.index else None
+            # Convert NaN to None for proper JSON serialization
+            if pd.isna(val):
+                val = None
+            row_dict[col] = val
+        rows_data.append(row_dict)
+
+    # Get project info
+    project_id = config.get("project_id", "Evaluation")
+    num_docs = df["num_documents"].iloc[0] if len(df) > 0 else 0
+    num_queries = df["num_queries"].iloc[0] if len(df) > 0 else 0
+
+    # Helper function to generate metric column headers
+    def _generate_metric_headers(cols: list[str]) -> str:
+        """Generate HTML for metric column headers."""
+        html = ""
+        for col in cols:
+            # Format column name nicely (e.g., mrr@10 -> MRR @10)
+            parts = col.split("@")
+            if len(parts) == 2:
+                display_name = f"{parts[0].upper()} @{parts[1]}"
+            else:
+                display_name = col.upper()
+
+            html += f'''<th class="px-4 py-3 text-left font-semibold text-gray-700" data-sort="{col}">
+                                {display_name} <span class="sort-arrow"></span>
+                            </th>
+                            '''
+        return html
+
+    # Generate metric headers before building the HTML
+    metric_headers_html = _generate_metric_headers(metric_cols)
+
+    # Generate HTML
+    # Format timestamp for display (convert from YYYYMMDD_HHMMSS to DD.MM.YYYY HH:MM:SS)
+    formatted_timestamp = timestamp
+    if len(timestamp) == 15 and "_" in timestamp:  # Format: YYYYMMDD_HHMMSS
+        date_part = timestamp[:8]  # YYYYMMDD
+        time_part = timestamp[9:]  # HHMMSS
+        formatted_timestamp = f"{date_part[6:8]}.{date_part[4:6]}.{date_part[:4]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+    
+    # Load HTML template
+    template_path = Path(__file__).parent / "dashboard_template.html"
+    html_template = template_path.read_text()
+    
+    # Prepare data for template
+    initial_sort_column = metric_cols[0] if metric_cols else "model_short"
+    results_data_json = json.dumps(rows_data, indent=2)
+    metric_cols_json = json.dumps(metric_cols)
+    
+    # Format the template
+    html_content = html_template.format(
+        project_id=project_id,
+        num_docs=num_docs,
+        num_queries=num_queries,
+        formatted_timestamp=formatted_timestamp,
+        metric_headers_html=metric_headers_html,
+        results_data_json=results_data_json,
+        metric_cols_json=metric_cols_json,
+        initial_sort_column=initial_sort_column,
+    )
+
+    # Write the HTML file
+    output_path = output_dir / f"dashboard_{timestamp}.html"
+    output_path.write_text(html_content)
+    console.print(
+        f"   ✓ Interactive HTML dashboard saved to: [green]{output_path}[/green]"
+    )

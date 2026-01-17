@@ -41,6 +41,7 @@ from _core.utils import (
     create_results_visualization,
     create_memory_visualization,
     create_tradeoff_visualization,
+    create_html_dashboard,
     truncate_text_to_tokens,
     get_openrouter_embeddings,
     parse_model_configs,
@@ -397,7 +398,7 @@ def main() -> None:
                 else config["project_id"]
             )
             eval_cache_key = generate_eval_cache_key(
-                eval_project_id, bm25_model_name, alpha, max_k, model_short
+                eval_project_id, bm25_model_name, alpha, max_k, model_short, metric_k_values
             )
 
             # Check if eval results already exist in cache
@@ -538,7 +539,7 @@ def main() -> None:
             if not args.force_recompute and embeddings_cached:
                 for alpha in alpha_values:
                     eval_cache_key = generate_eval_cache_key(
-                        cache_project_id, model_id, alpha, max_k, model_name
+                        cache_project_id, model_id, alpha, max_k, model_name, metric_k_values
                     )
                     if not eval_results_exist(eval_cache_key, evals_dir):
                         all_evals_cached = False
@@ -576,7 +577,7 @@ def main() -> None:
                 # Load all cached eval results
                 for alpha in alpha_values:
                     eval_cache_key = generate_eval_cache_key(
-                        cache_project_id, model_id, alpha, max_k, model_name
+                        cache_project_id, model_id, alpha, max_k, model_name, metric_k_values
                     )
                     print_loading_cached(f"eval results for alpha={alpha}")
                     cached_result = load_eval_results(eval_cache_key, evals_dir)
@@ -1056,7 +1057,7 @@ def main() -> None:
                 for alpha in alpha_values:
                     # Generate cache key for this specific eval configuration
                     eval_cache_key = generate_eval_cache_key(
-                        cache_project_id, model_id, alpha, max_k, model_name
+                        cache_project_id, model_id, alpha, max_k, model_name, metric_k_values
                     )
 
                     # Check if eval results already exist in cache
@@ -1337,7 +1338,7 @@ def main() -> None:
             for alpha in config["search"]["alpha"]:
                 # Generate cache key for this specific eval configuration
                 eval_cache_key = generate_eval_cache_key(
-                    cache_project_id, model_id, alpha, max_k, model_name
+                    cache_project_id, model_id, alpha, max_k, model_name, metric_k_values
                 )
 
                 # Check if eval results already exist in cache
@@ -1433,7 +1434,15 @@ def main() -> None:
         results_file = output_dir / f"results_{timestamp}.csv"
         with open(results_file, "w", newline="") as f:
             if all_results:
-                writer = csv.DictWriter(f, fieldnames=all_results[0].keys())
+                # Collect all unique keys across all results to handle varying metric columns
+                all_fieldnames: list[str] = []
+                seen_keys: set[str] = set()
+                for result in all_results:
+                    for key in result.keys():
+                        if key not in seen_keys:
+                            all_fieldnames.append(key)
+                            seen_keys.add(key)
+                writer = csv.DictWriter(f, fieldnames=all_fieldnames)
                 writer.writeheader()
                 writer.writerows(all_results)
 
@@ -1451,6 +1460,11 @@ def main() -> None:
             create_tradeoff_visualization(
                 all_results, memory_data, output_dir, timestamp, config
             )
+
+        # Create interactive HTML dashboard
+        create_html_dashboard(
+            all_results, memory_data or {}, output_dir, timestamp, config
+        )
 
     finally:
         # Cleanup

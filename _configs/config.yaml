@@ -41,6 +41,9 @@ embeddings:
     # mxbai-embed-2d-large-v1: mixedbread-ai/mxbai-embed-2d-large-v1
     # mxbai-embed-xsmall-v1: mixedbread-ai/mxbai-embed-xsmall-v1
     mxbai-embed-de-large-v1: mixedbread-ai/deepset-mxbai-embed-de-large-v1
+    snowflake-m:
+      model: Snowflake/snowflake-arctic-embed-m-v2.0
+      use_query_prompt: true
     # snowflake-l:
     #   model: Snowflake/snowflake-arctic-embed-l-v2.0
     #   use_query_prompt: true
@@ -49,7 +52,8 @@ embeddings:
     # potion-base-8M: minishlab/potion-base-8M
     # potion-base-32M: minishlab/potion-base-32M
     potion-retrieval-32M: minishlab/potion-retrieval-32M
-    # potion-multilingual-128M: minishlab/potion-multilingual-128M
+    potion-multilingual-128M: minishlab/potion-multilingual-128M
+    # bert-hash-femto: NeuML/bert-hash-femto-embeddings
     # mdbr-leaf-ir: mongodb/mdbr-leaf-ir
     # mdbr-leaf-ir-asym: mongodb/mdbr-leaf-ir-asym
     # luxical-one: DatologyAI/luxical-one-v1 # TODO: Wait until sentence-transformers supports this model and then enable
@@ -90,7 +94,7 @@ search:
   # 0.0 = pure lexical search (BM25)
   # 1.0 = pure semantic vector search
   # 0.7 = Weaviate's default value for hybrid search
-  alpha: [0.7, 1.0]
+  alpha: [0.25, 0.5, 0.75, 1.0]
 
   # Maximum candidates for BM25 retrieval in hybrid mode (ColBERT + BM25)
   # Limits the number of documents retrieved for score normalization to avoid
@@ -101,7 +105,7 @@ search:
   # Each metric can have its own list of K cutoffs
   # Results will be computed at each specified K for each metric
   metrics:
-    mrr_k: [10] # Mean Reciprocal Rank @ K
+    mrr_k: [1, 3, 10] # Mean Reciprocal Rank @ K
     hit_rate_k: [3] # Hit Rate (Success Rate) @ K
 
   # Include BM25 baseline (pure lexical search with alpha=0.0)
@@ -138,7 +142,7 @@ query_generation:
   ollama:
     model: "ministral-3:14b"
     url: "http://localhost:11434/v1"
-    max_workers: 1 
+    max_workers: 1
 
 # Evals cache
 evals:
