@@ -1,54 +1,114 @@
-# AGENTS Guidelines for This Repository (Python)
+# AGENTS Guidelines (Python)
 
-Guidelines for agent-assisted development. Python 3.12-3.13, managed with `uv`.
+Guidelines for agent-assisted development. Python 3.12+, managed with `uv`.
 
-## Environment Management with `uv`
+## Process & Security
+
+- **Living Doc**: Update this file with new findings/notes.
+- **Scope**: Work only in this repo.
+- **Approvals**: **ALWAYS** ask before fetching external resources or installing packages.
+- **Secrets**: Store in `.env`, load with `python-dotenv`. Never hardcode or commit secrets.
+- **Assumptions**: Surface inconsistencies, unclear intent, or ambiguous requirements—ask for clarification before proceeding. Push back on bad ideas. Present trade-offs when relevant.
+- **Simplicity**: Favor simple, explicit, maintainable solutions. No over-engineering. Always prefer the simplest solution that meets requirements.
+- **Scope Discipline**: Only modify code directly related to the current task. Never change, move, or remove code, comments, or logic that is orthogonal to your task—even if it seems "wrong" or you don't fully understand it. If you spot issues elsewhere, flag them separately.
+- **Cleanup**: Remove dead code, temporary files, and dev artifacts after each step. Release resources (files, connections, temp dirs) using `with` context managers or `atexit` for global cleanup.
+- **Self-Check Before Finishing**: Before presenting a solution, verify: (1) Did I make assumptions I should have clarified? (2) Is this the simplest solution? (3) Did I change unrelated code as a side effect? (4) What alternatives/tradeoffs should I mention?
+
+## Environment (`uv`)
+
+Manage env with `uv`. Re-run `uv sync` after changes.
 
 ```bash
-uv sync                 # Create/sync environment to lockfile
-uv add <pkg>            # Add runtime dependency
-uv add --dev <pkg>      # Add dev dependency
-uv run <command>        # Run in managed environment
+uv sync                 # Lock/Sync
+uv add [--dev] <pkg>    # Add dependency
+uv run <cmd>            # Run in env
 ```
 
-Re-run `uv sync` after any dependency changes.
+## Python Conventions
 
-## Modern Python Conventions
+- **Types**: Modern syntax (`list[str]`, `X | None`, `Self`). No `typing.List`.
+- **Data**: Use `dataclasses` or `TypedDict`.
+- **Paths**: `pathlib.Path` only.
+- **Errors**: Specific exceptions with messages. No bare `except:`.
+- **Formatting**: f-strings. Use debug format `f"{var=}"` → outputs `var=value`.
 
-**Type hints** - Required for all functions. Use modern syntax:
+## Configuration
+
+- **Settings**: Store in `config.yaml`, load with `pyyaml`.
+- **Secrets**: Store in `.env`, load with `python-dotenv`. Never commit to git.
+- **No magic values**: All configurable parameters belong in config files.
+
+## Logging
+
+Use `logging` module with JSON output for structured logs:
 
 ```python
-def process(items: list[str], config: dict[str, Any] | None = None) -> bool: ...
+import logging
+import json
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({"level": record.levelname, "message": record.getMessage(), "module": record.module})
+
+handler = logging.StreamHandler()
+handler.setFormatter(JSONFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[handler])
 ```
 
-- Use `X | None` instead of `Optional[X]`
-- Use `list`, `dict`, `tuple` directly (not `typing.List`, etc.)
-- Use `Self` for methods returning their own class type
+## Principles
 
-**Data structures** - Prefer `dataclasses` or `TypedDict` for structured data.
-
-**Paths** - Use `pathlib.Path`, not string paths.
-
-**Resources** - Use context managers (`with` statements) for files, connections, locks.
-
-**Error handling** - Raise specific exceptions with actionable messages. Never use bare `except:`.
-
-**Pattern matching** - Use `match`/`case` for complex conditional logic with structured data.
-
-**String formatting** - Use f-strings. Use `f"{var=}"` for debug output.
+1. **Flat Architecture**: Explicit, linear control flow. No metaclasses, `exec`, or dynamic attribute generation.
+2. **Predictable**: Consistent layout, standard patterns, deterministic tests.
+3. **Modular**: Decoupled modules, config-driven behavior.
+4. **Quality**: Descriptive names, structured logging.
 
 ## Documentation
 
-- **Comments**: Explain _why_, not _what_. Code should be self-explanatory for the _what_.
-- **Docstrings**: Required for public functions/classes. Follow [PEP 257](https://peps.python.org/pep-0257/).
-- **README**: Keep this file updated. Keep it concise and clear. No fluff. Focus on essential info, usage, and examples.
-- **Additional docs**: Avoid excessive documentation and additional files unless absolutely necessary. Do not create documents where you just summarize your changes. Update the README instead with the essential information.
+- **Comments/Docstrings**: Explain _why_. Follow PEP 257.
+- **README**: Concise usage/examples. No fluff.
+- **Files**: Avoid extra docs. Update README/AGENTS.md instead.
+
+## Testing
+
+- **Location**: `tests/` directory, mirroring source structure.
+- **Naming**: `test_<module>.py`, functions `test_<behavior>()`.
+- **Fixtures**: Use `conftest.py` for shared fixtures.
+- **Run**: `uv run pytest -v` (verbose) or `uv run pytest -x` (stop on first failure).
+
+## Git
+
+- **Commits**: Use conventional commits: `type(scope): message`
+  - Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
+  - Example: `feat(auth): add OAuth2 login flow`
+- **Branches**: `feature/<name>`, `fix/<name>`, `refactor/<name>`
+- **Keep clean**: Commit small, logical changes. No WIP commits on main.
 
 ## Code Quality
 
 ```bash
-uv run ruff format .          # Format code
-uv run ruff check .           # Lint
-uv run ruff check . --fix     # Lint with auto-fix
-uv run pytest                 # Run tests
+uv run ruff format .          # Format
+uv run ruff check . [--fix]   # Lint
+uv run pytest                 # Test
+uv run ruff format . && uv run ruff check . && uv run pytest  # All checks
 ```
+
+## Core Stack
+
+- **Config**: `pyyaml` for YAML, `python-dotenv` for env vars.
+- **CLI**: `typer` (not `argparse`). Type hints, `typer.Argument()`, `typer.Option()`. Use Enum for fixed choices.
+- **HTTP**: `httpx` for async requests.
+- **Output**: `rich` (`Console`, `Table`) for terminal output.
+
+## Domain-Specific Stack
+
+- **FastAPI**: Pydantic validation, `app/routers/` modules, dependency injection, `async` I/O.
+- **Streamlit**: `st.sidebar` for controls, `st.session_state`, `@st.cache_data`.
+- **LLM**: OpenRouter via OpenAI-compatible client. Load API key from `.env`. Config in `config.yaml` (model, temp, tokens). Concurrent: `ThreadPoolExecutor`.
+- **Embeddings**: `sentence-transformers` (local, e.g., `intfloat/multilingual-e5-small`).
+- **Scraping**: `playwright` — async, headless, built-in selectors (`role`, `text`).
+- **Data Science**: Jupyter, pandas (vectorized), pyarrow/parquet, scikit-learn, seaborn.
+- **Document Parsing**: `docling` — parse docs to MD (`export_to_markdown`).
+
+## Discovery Log
+
+- (Agent: Add project-specific notes/stack decisions here)
