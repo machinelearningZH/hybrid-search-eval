@@ -39,6 +39,8 @@ dev = [
     "types-seaborn>=0.13.2.20250914",
 ]
 
+[tool.uv]
+exclude-newer = "7 days"
 
 [tool.ruff.lint]
 ignore = ["E501"]
