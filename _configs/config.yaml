@@ -34,8 +34,10 @@ embeddings:
     #   model: intfloat/multilingual-e5-large
     #   use_query_prefix: true
     #   use_passage_prefix: true
-    granite-97m: ibm-granite/granite-embedding-97m-multilingual-r2
-    granite-311m: ibm-granite/granite-embedding-311m-multilingual-r2
+    perplexity-0.6b: perplexity-ai/pplx-embed-v1-0.6B
+    # perplexity-4b: perplexity-ai/pplx-embed-v1-4b
+    # granite-97m: ibm-granite/granite-embedding-97m-multilingual-r2
+    # granite-311m: ibm-granite/granite-embedding-311m-multilingual-r2
     # jina-v2: jinaai/jina-embeddings-v2-base-de
     # jina-v3: jinaai/jina-embeddings-v3
     # mxbai-embed-large-v1: mixedbread-ai/mxbai-embed-large-v1
