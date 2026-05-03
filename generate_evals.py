@@ -762,7 +762,7 @@ def main() -> None:
                     # Check for ColBERT model loaded as SentenceTransformer
                     if "MaxSim" in error_msg and "SimilarityFunction" in error_msg:
                         console.print(
-                            f"\n❌ [bold red]ColBERT model misconfiguration detected![/bold red]"
+                            "\n❌ [bold red]ColBERT model misconfiguration detected![/bold red]"
                         )
                         console.print(
                             f"   Model [cyan]'{model_id}'[/cyan] is a ColBERT late-interaction model."

@@ -548,7 +548,7 @@ def main() -> int:
         console.print(f"   • [cyan]{display_text}[/cyan] → {corpus_id}")
 
     console.print(f"\n✅ [green]Done! MTEB dataset saved to {args.output_dir}[/green]")
-    console.print(f"   You can now run evaluation with: uv run generate_evals.py")
+    console.print("   You can now run evaluation with: uv run generate_evals.py")
 
     return 0
 

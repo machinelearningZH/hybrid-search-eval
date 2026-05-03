@@ -955,7 +955,7 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
         )
         if is_likely_colbert:
             console.print(
-                f"\n⚠️  [bold yellow]WARNING: Potential ColBERT model in wrong section![/bold yellow]"
+                "\n⚠️  [bold yellow]WARNING: Potential ColBERT model in wrong section![/bold yellow]"
             )
             console.print(
                 f"   Model [cyan]'{model_name}'[/cyan] ([dim]{model_id}[/dim]) appears to be a ColBERT model."
