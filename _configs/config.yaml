@@ -7,7 +7,7 @@ project_id: "eval_example"
 # - qrels: Contains relevance judgments with columns ['query-id', 'corpus-id', 'score']
 data:
   # Specify data directory (files must be named corpus.parquet, queries.parquet, qrels.parquet)
-  mteb_data_dir: "./_data/mteb/NanoBEIR-de"
+  mteb_data_dir: "./_data/mteb_user"
 
 # Embedding models to test
 # Models can be specified as:
@@ -34,13 +34,14 @@ embeddings:
     #   model: intfloat/multilingual-e5-large
     #   use_query_prefix: true
     #   use_passage_prefix: true
-    # granite: ibm-granite/granite-embedding-278m-multilingual
+    granite-97m: ibm-granite/granite-embedding-97m-multilingual-r2
+    granite-311m: ibm-granite/granite-embedding-311m-multilingual-r2
     # jina-v2: jinaai/jina-embeddings-v2-base-de
     # jina-v3: jinaai/jina-embeddings-v3
     # mxbai-embed-large-v1: mixedbread-ai/mxbai-embed-large-v1
     # mxbai-embed-2d-large-v1: mixedbread-ai/mxbai-embed-2d-large-v1
     # mxbai-embed-xsmall-v1: mixedbread-ai/mxbai-embed-xsmall-v1
-    mxbai-embed-de-large-v1: mixedbread-ai/deepset-mxbai-embed-de-large-v1
+    # mxbai-embed-de-large-v1: mixedbread-ai/deepset-mxbai-embed-de-large-v1
     snowflake-m:
       model: Snowflake/snowflake-arctic-embed-m-v2.0
       use_query_prompt: true
@@ -51,8 +52,8 @@ embeddings:
     # potion-base-4M: minishlab/potion-base-4M
     # potion-base-8M: minishlab/potion-base-8M
     # potion-base-32M: minishlab/potion-base-32M
-    potion-retrieval-32M: minishlab/potion-retrieval-32M
-    potion-multilingual-128M: minishlab/potion-multilingual-128M
+    # potion-retrieval-32M: minishlab/potion-retrieval-32M
+    # potion-multilingual-128M: minishlab/potion-multilingual-128M
     # bert-hash-femto: NeuML/bert-hash-femto-embeddings
     # mdbr-leaf-ir: mongodb/mdbr-leaf-ir
     # mdbr-leaf-ir-asym: mongodb/mdbr-leaf-ir-asym
