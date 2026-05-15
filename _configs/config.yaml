@@ -36,10 +36,12 @@ embeddings:
     #   use_passage_prefix: true
     perplexity-0.6b: perplexity-ai/pplx-embed-v1-0.6B
     # perplexity-4b: perplexity-ai/pplx-embed-v1-4b
-    # granite-97m: ibm-granite/granite-embedding-97m-multilingual-r2
+    granite-97m: ibm-granite/granite-embedding-97m-multilingual-r2
     # granite-311m: ibm-granite/granite-embedding-311m-multilingual-r2
     # jina-v2: jinaai/jina-embeddings-v2-base-de
     # jina-v3: jinaai/jina-embeddings-v3
+    f2lllm-v2-80M: codefuse-ai/F2LLM-v2-80M
+    # f2lllm-v2-160M: codefuse-ai/F2LLM-v2-160M
     # mxbai-embed-large-v1: mixedbread-ai/mxbai-embed-large-v1
     # mxbai-embed-2d-large-v1: mixedbread-ai/mxbai-embed-2d-large-v1
     # mxbai-embed-xsmall-v1: mixedbread-ai/mxbai-embed-xsmall-v1
