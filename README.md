@@ -384,7 +384,7 @@ Embeddings and evaluations are cached in `_cache_embeddings/` and `_cache_evals/
 
 ## Project Team
 
-**Chantal Amrhein**, **Patrick Arnecke** – [Statistisches Amt Zürich: Team Data](https://www.zh.ch/de/direktion-der-justiz-und-des-innern/statistisches-amt/data.html)
+**Chantal Amrhein**, **Patrick Arnecke** – [Amt für Statistik und Daten Zürich: Team Data](https://www.zh.ch/de/direktion-der-justiz-und-des-innern/amt-fuer-statistik-und-daten/data.html)
 
 ## Feedback and Contributing
 
