@@ -343,6 +343,18 @@ embeddings:
       use_passage_prompt: true # Passes prompt_name="passage" to encode()
 ```
 
+**Models with named query prompts** (e.g. Microsoft Harrier retrieval models):
+
+```yaml
+embeddings:
+  huggingface:
+    harrier-oss-v1-270m:
+      model: microsoft/harrier-oss-v1-270m
+      query_prompt_name: web_search_query # Passes prompt_name="web_search_query" for queries
+```
+
+Use `query_prompt_name` or `passage_prompt_name` when a SentenceTransformer model defines named prompts beyond the generic `query` and `passage` names. Prompt and prefix settings are included in embedding and evaluation cache keys.
+
 **Device configuration:**
 
 ```yaml

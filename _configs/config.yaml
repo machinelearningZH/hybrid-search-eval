@@ -18,6 +18,8 @@ data:
 #    - use_passage_prefix: true/false (adds "passage: " prefix, default: false)
 #    - use_query_prompt: true/false (passes prompt_name="query" to encode(), default: false)
 #    - use_passage_prompt: true/false (passes prompt_name="passage" to encode(), default: false)
+#    - query_prompt_name: prompt name to pass to encode() for queries, e.g. "web_search_query"
+#    - passage_prompt_name: prompt name to pass to encode() for passages/documents
 
 embeddings:
   huggingface:
@@ -34,6 +36,13 @@ embeddings:
     #   model: intfloat/multilingual-e5-large
     #   use_query_prefix: true
     #   use_passage_prefix: true
+    harrier-oss-v1-270m:
+      model: microsoft/harrier-oss-v1-270m
+      query_prompt_name: web_search_query
+    harrier-oss-v1-0.6b:
+      model: microsoft/harrier-oss-v1-0.6b
+      query_prompt_name: web_search_query
+    # harrier-oss-v1-27b: microsoft/harrier-oss-v1-27b
     perplexity-0.6b: perplexity-ai/pplx-embed-v1-0.6B
     # perplexity-4b: perplexity-ai/pplx-embed-v1-4b
     granite-97m: ibm-granite/granite-embedding-97m-multilingual-r2
@@ -139,7 +148,7 @@ model:
 
 # Query generation settings
 query_generation:
-  model: "google/gemini-2.5-flash-lite-preview-09-2025"
+  model: "google/gemini-2.5-flash-lite"
   max_workers: 50
   max_retries: 3
   temperature: 1.0 # Higher temperature for more diversity in generated queries

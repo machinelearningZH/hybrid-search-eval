@@ -398,7 +398,12 @@ def main() -> None:
                 else config["project_id"]
             )
             eval_cache_key = generate_eval_cache_key(
-                eval_project_id, bm25_model_name, alpha, max_k, model_short, metric_k_values
+                eval_project_id,
+                bm25_model_name,
+                alpha,
+                max_k,
+                model_short,
+                metric_k_values,
             )
 
             # Check if eval results already exist in cache
@@ -470,6 +475,9 @@ def main() -> None:
             passage_prefix = model_config["passage_prefix"]
             query_encode_kwargs = model_config["query_encode_kwargs"]
             passage_encode_kwargs = model_config["passage_encode_kwargs"]
+            query_cache_identity = model_config["query_cache_identity"]
+            passage_cache_identity = model_config["passage_cache_identity"]
+            cache_identity = model_config["cache_identity"]
             use_openrouter = model_config["is_openrouter"]
             is_colbert = model_config.get("is_colbert", False)
 
@@ -509,8 +517,18 @@ def main() -> None:
                 if dataset_id
                 else config["project_id"]
             )
-            doc_cache_key = generate_cache_key(cache_project_id, model_id, "documents")
-            query_cache_key = generate_cache_key(cache_project_id, model_id, "queries")
+            doc_cache_key = generate_cache_key(
+                cache_project_id,
+                model_id,
+                "documents",
+                cache_identity=passage_cache_identity,
+            )
+            query_cache_key = generate_cache_key(
+                cache_project_id,
+                model_id,
+                "queries",
+                cache_identity=query_cache_identity,
+            )
 
             # Check if all embeddings and evals are cached
             # ColBERT models use different storage format
@@ -539,7 +557,13 @@ def main() -> None:
             if not args.force_recompute and embeddings_cached:
                 for alpha in alpha_values:
                     eval_cache_key = generate_eval_cache_key(
-                        cache_project_id, model_id, alpha, max_k, model_name, metric_k_values
+                        cache_project_id,
+                        model_id,
+                        alpha,
+                        max_k,
+                        model_name,
+                        metric_k_values,
+                        cache_identity=cache_identity,
                     )
                     if not eval_results_exist(eval_cache_key, evals_dir):
                         all_evals_cached = False
@@ -577,7 +601,13 @@ def main() -> None:
                 # Load all cached eval results
                 for alpha in alpha_values:
                     eval_cache_key = generate_eval_cache_key(
-                        cache_project_id, model_id, alpha, max_k, model_name, metric_k_values
+                        cache_project_id,
+                        model_id,
+                        alpha,
+                        max_k,
+                        model_name,
+                        metric_k_values,
+                        cache_identity=cache_identity,
                     )
                     print_loading_cached(f"eval results for alpha={alpha}")
                     cached_result = load_eval_results(eval_cache_key, evals_dir)
@@ -1072,7 +1102,13 @@ def main() -> None:
                 for alpha in alpha_values:
                     # Generate cache key for this specific eval configuration
                     eval_cache_key = generate_eval_cache_key(
-                        cache_project_id, model_id, alpha, max_k, model_name, metric_k_values
+                        cache_project_id,
+                        model_id,
+                        alpha,
+                        max_k,
+                        model_name,
+                        metric_k_values,
+                        cache_identity=cache_identity,
                     )
 
                     # Check if eval results already exist in cache
@@ -1353,7 +1389,13 @@ def main() -> None:
             for alpha in config["search"]["alpha"]:
                 # Generate cache key for this specific eval configuration
                 eval_cache_key = generate_eval_cache_key(
-                    cache_project_id, model_id, alpha, max_k, model_name, metric_k_values
+                    cache_project_id,
+                    model_id,
+                    alpha,
+                    max_k,
+                    model_name,
+                    metric_k_values,
+                    cache_identity=cache_identity,
                 )
 
                 # Check if eval results already exist in cache

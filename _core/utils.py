@@ -289,6 +289,18 @@ def validate_config(
                                     errors.append(
                                         f"❌ '{model_name}.{flag}' must be a boolean (true/false), got {type(model_config[flag]).__name__}"
                                     )
+                            prompt_name_fields = [
+                                "query_prompt_name",
+                                "passage_prompt_name",
+                            ]
+                            for field in prompt_name_fields:
+                                if field in model_config and (
+                                    not isinstance(model_config[field], str)
+                                    or not model_config[field].strip()
+                                ):
+                                    errors.append(
+                                        f"❌ '{model_name}.{field}' must be a non-empty string, got {type(model_config[field]).__name__}"
+                                    )
                         else:
                             errors.append(
                                 f"❌ HuggingFace model '{model_name}' must be a string or dict, got {type(model_config).__name__}"
@@ -920,6 +932,9 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
         - passage_prefix: String to prepend to passages (e.g., "passage: ")
         - query_encode_kwargs: Dict of kwargs for query encoding
         - passage_encode_kwargs: Dict of kwargs for passage encoding
+        - query_cache_identity: Query preprocessing/encoding options for cache keys
+        - passage_cache_identity: Passage preprocessing/encoding options for cache keys
+        - cache_identity: Combined query and passage identity for eval cache keys
         - is_openrouter: Boolean indicating if this is an OpenRouter model
         - is_colbert: Boolean indicating if this is a ColBERT late-interaction model
     """
@@ -997,6 +1012,8 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
             use_passage_prefix = False
             use_query_prompt = False
             use_passage_prompt = False
+            query_prompt_name = None
+            passage_prompt_name = None
         else:
             # Dict format with options
             model_id = model_spec.get("model")
@@ -1009,6 +1026,8 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
             use_passage_prefix = model_spec.get("use_passage_prefix", False)
             use_query_prompt = model_spec.get("use_query_prompt", False)
             use_passage_prompt = model_spec.get("use_passage_prompt", False)
+            query_prompt_name = model_spec.get("query_prompt_name")
+            passage_prompt_name = model_spec.get("passage_prompt_name")
 
         # Build prefixes
         query_prefix = "query: " if use_query_prefix else ""
@@ -1017,10 +1036,30 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
         # Build encode kwargs
         query_encode_kwargs = {}
         passage_encode_kwargs = {}
-        if use_query_prompt:
+        if query_prompt_name:
+            query_encode_kwargs["prompt_name"] = query_prompt_name
+        elif use_query_prompt:
             query_encode_kwargs["prompt_name"] = "query"
-        if use_passage_prompt:
+        if passage_prompt_name:
+            passage_encode_kwargs["prompt_name"] = passage_prompt_name
+        elif use_passage_prompt:
             passage_encode_kwargs["prompt_name"] = "passage"
+
+        query_cache_identity = {}
+        if query_prefix:
+            query_cache_identity["query_prefix"] = query_prefix
+        if query_encode_kwargs:
+            query_cache_identity["query_encode_kwargs"] = query_encode_kwargs
+
+        passage_cache_identity = {}
+        if passage_prefix:
+            passage_cache_identity["passage_prefix"] = passage_prefix
+        if passage_encode_kwargs:
+            passage_cache_identity["passage_encode_kwargs"] = passage_encode_kwargs
+        cache_identity = {
+            **query_cache_identity,
+            **passage_cache_identity,
+        }
 
         # Disambiguate display name if it appears in multiple providers
         display_name = (
@@ -1035,6 +1074,9 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "passage_prefix": passage_prefix,
                 "query_encode_kwargs": query_encode_kwargs,
                 "passage_encode_kwargs": passage_encode_kwargs,
+                "query_cache_identity": query_cache_identity,
+                "passage_cache_identity": passage_cache_identity,
+                "cache_identity": cache_identity,
                 "is_openrouter": False,
                 "is_colbert": False,
             }
@@ -1068,6 +1110,9 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "passage_prefix": "",
                 "query_encode_kwargs": {},
                 "passage_encode_kwargs": {},
+                "query_cache_identity": {},
+                "passage_cache_identity": {},
+                "cache_identity": {},
                 "is_openrouter": False,
                 "is_colbert": True,
             }
@@ -1100,6 +1145,9 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
                     "passage_prefix": "",
                     "query_encode_kwargs": {},
                     "passage_encode_kwargs": {},
+                    "query_cache_identity": {},
+                    "passage_cache_identity": {},
+                    "cache_identity": {},
                     "is_openrouter": True,
                     "is_colbert": False,
                 }
@@ -1125,19 +1173,28 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
     return model_configs
 
 
-def generate_cache_key(project_id: str, model_name: str, data_type: str) -> str:
+def generate_cache_key(
+    project_id: str,
+    model_name: str,
+    data_type: str,
+    cache_identity: dict[str, Any] | None = None,
+) -> str:
     """Generate a unique cache key for embeddings.
 
     Args:
         project_id: The project identifier
         model_name: The embedding model name
         data_type: Either 'documents' or 'queries'
+        cache_identity: Optional model preprocessing/encoding options that affect
+                        the embedding values
 
     Returns:
         A hash-based cache key
     """
     # Create a deterministic key based on project_id, model, and data type
     key_string = f"{project_id}_{model_name}_{data_type}"
+    if cache_identity:
+        key_string += f"_{json.dumps(cache_identity, sort_keys=True)}"
     # Use hash for cleaner filenames
     hash_suffix = hashlib.md5(key_string.encode()).hexdigest()[:8]
     # Use model short name for readability
@@ -1312,6 +1369,7 @@ def generate_eval_cache_key(
     k: int,
     display_name: str = "",
     metric_k_values: dict[str, list[int]] | None = None,
+    cache_identity: dict[str, Any] | None = None,
 ) -> str:
     """Generate a unique cache key for evaluation results.
 
@@ -1324,6 +1382,8 @@ def generate_eval_cache_key(
                       (e.g., when same model is run via HuggingFace and OpenRouter)
         metric_k_values: Optional dict of metric names to K value lists for cache
                          invalidation when metrics config changes
+        cache_identity: Optional embedding preprocessing/encoding options that affect
+                        retrieval results
 
     Returns:
         A hash-based cache key
@@ -1336,6 +1396,8 @@ def generate_eval_cache_key(
     if metric_k_values:
         metrics_str = str(sorted((m, sorted(ks)) for m, ks in metric_k_values.items()))
         key_string += f"_metrics{metrics_str}"
+    if cache_identity:
+        key_string += f"_identity{json.dumps(cache_identity, sort_keys=True)}"
 
     # Use hash for cleaner filenames
     hash_suffix = hashlib.md5(key_string.encode()).hexdigest()[:8]
@@ -2340,12 +2402,16 @@ def create_html_dashboard(
                     return False
                 return a > b
 
-            metrics_at_least_as_good = all(safe_ge(other[m], row[m]) for m in metric_cols)
+            metrics_at_least_as_good = all(
+                safe_ge(other[m], row[m]) for m in metric_cols
+            )
             latency_at_least_as_good = (
                 other["avg_embed_time_ms"] <= row["avg_embed_time_ms"]
             )
 
-            metrics_strictly_better = any(safe_gt(other[m], row[m]) for m in metric_cols)
+            metrics_strictly_better = any(
+                safe_gt(other[m], row[m]) for m in metric_cols
+            )
             latency_strictly_better = (
                 other["avg_embed_time_ms"] < row["avg_embed_time_ms"]
             )
@@ -2421,16 +2487,16 @@ def create_html_dashboard(
         date_part = timestamp[:8]  # YYYYMMDD
         time_part = timestamp[9:]  # HHMMSS
         formatted_timestamp = f"{date_part[6:8]}.{date_part[4:6]}.{date_part[:4]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
-    
+
     # Load HTML template
     template_path = Path(__file__).parent / "dashboard_template.html"
     html_template = template_path.read_text()
-    
+
     # Prepare data for template
     initial_sort_column = metric_cols[0] if metric_cols else "model_short"
     results_data_json = json.dumps(rows_data, indent=2)
     metric_cols_json = json.dumps(metric_cols)
-    
+
     # Format the template
     html_content = html_template.format(
         project_id=project_id,
