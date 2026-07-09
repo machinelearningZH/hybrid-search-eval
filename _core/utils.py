@@ -1173,6 +1173,41 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
     return model_configs
 
 
+def repair_snowflake_position_ids(model: Any, model_id: str) -> bool:
+    """Reset corrupted Snowflake GTE position IDs after model load.
+
+    Some Snowflake Arctic Embed v2 checkpoints can load a non-persistent
+    `embeddings.position_ids` buffer with garbage values. The custom GTE model
+    uses that buffer to index RoPE caches, so encode() fails with huge
+    out-of-bounds indices unless it is rebuilt.
+    """
+    if "snowflake" not in model_id.lower():
+        return False
+
+    try:
+        embeddings = model._first_module().auto_model.embeddings
+        position_ids = embeddings.position_ids
+        register_buffer = embeddings.register_buffer
+    except AttributeError:
+        return False
+
+    import torch
+
+    if not isinstance(position_ids, torch.Tensor) or position_ids.ndim != 1:
+        return False
+
+    expected_position_ids = torch.arange(
+        position_ids.numel(),
+        device=position_ids.device,
+        dtype=position_ids.dtype,
+    )
+    if torch.equal(position_ids, expected_position_ids):
+        return False
+
+    register_buffer("position_ids", expected_position_ids, persistent=False)
+    return True
+
+
 def generate_cache_key(
     project_id: str,
     model_name: str,

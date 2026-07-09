@@ -2,8 +2,11 @@ from _core.utils import (
     generate_cache_key,
     generate_eval_cache_key,
     parse_model_configs,
+    repair_snowflake_position_ids,
     validate_config,
 )
+
+import torch
 
 
 def _minimal_config(model_spec: object) -> dict:
@@ -109,3 +112,58 @@ def test_eval_cache_keys_include_prompt_identity() -> None:
     )
 
     assert unprompted != prompted
+
+
+class _FakeEmbeddings(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer(
+            "position_ids",
+            torch.tensor([0, 4320601048, -1], dtype=torch.long),
+            persistent=False,
+        )
+
+
+class _FakeAutoModel:
+    def __init__(self) -> None:
+        self.embeddings = _FakeEmbeddings()
+
+
+class _FakeTransformerModule:
+    def __init__(self) -> None:
+        self.auto_model = _FakeAutoModel()
+
+
+class _FakeSentenceTransformer:
+    def __init__(self) -> None:
+        self.module = _FakeTransformerModule()
+
+    def _first_module(self) -> _FakeTransformerModule:
+        return self.module
+
+
+def test_repair_snowflake_position_ids_resets_corrupted_buffer() -> None:
+    model = _FakeSentenceTransformer()
+
+    repaired = repair_snowflake_position_ids(
+        model,
+        "Snowflake/snowflake-arctic-embed-m-v2.0",
+    )
+
+    assert repaired is True
+    assert model.module.auto_model.embeddings.position_ids.tolist() == [0, 1, 2]
+
+
+def test_repair_snowflake_position_ids_ignores_other_models() -> None:
+    model = _FakeSentenceTransformer()
+
+    repaired = repair_snowflake_position_ids(
+        model, "sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+    assert repaired is False
+    assert model.module.auto_model.embeddings.position_ids.tolist() == [
+        0,
+        4320601048,
+        -1,
+    ]

@@ -45,6 +45,7 @@ from _core.utils import (
     truncate_text_to_tokens,
     get_openrouter_embeddings,
     parse_model_configs,
+    repair_snowflake_position_ids,
     print_loading_cached,
     print_loaded_cached,
     print_generating,
@@ -737,6 +738,11 @@ def main() -> None:
                 console.print("   Loading model...", style="cyan")
                 try:
                     model = SentenceTransformer(model_id, **model_kwargs)
+                    if repair_snowflake_position_ids(model, model_id):
+                        console.print(
+                            "   ⚠️  [yellow]Snowflake model: repaired position_ids buffer[/yellow]",
+                            style="dim",
+                        )
                     memory_after_model_mb = get_memory_usage_mb()
                     model_memory_mb = max(0.0, memory_after_model_mb - memory_before_mb)
                     console.print(
