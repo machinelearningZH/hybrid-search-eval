@@ -8,6 +8,7 @@ project_id: "eval_example"
 data:
   # Specify data directory (files must be named corpus.parquet, queries.parquet, qrels.parquet)
   mteb_data_dir: "./_data/mteb_user"
+  # mteb_data_dir: "./_data/mteb/NanoBEIR-de" # Example for another dataset (uncomment to use)
 
 # Embedding models to test
 # Models can be specified as:
