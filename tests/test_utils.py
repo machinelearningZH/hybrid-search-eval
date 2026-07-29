@@ -1,149 +1,328 @@
+from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import pytest
+import torch
+
 from _core.utils import (
+    MTEBRetrievalData,
+    calculate_hit,
+    calculate_reciprocal_rank,
+    colbert_embeddings_exist,
+    embeddings_exist,
+    eval_results_exist,
     generate_cache_key,
     generate_eval_cache_key,
+    load_colbert_embeddings,
+    load_embeddings,
+    load_eval_results,
+    load_mteb_retrieval_data_from_dir,
     parse_model_configs,
     repair_snowflake_position_ids,
+    save_colbert_embeddings,
+    save_embeddings,
+    save_eval_results,
     validate_config,
 )
 
-import torch
 
-
-def _minimal_config(model_spec: object) -> dict:
-    return {
-        "project_id": "test",
-        "data": {"mteb_data_dir": "_data/mteb_user"},
+def test_parse_model_configs_preserves_provider_behavior_and_unique_names() -> None:
+    config = {
         "embeddings": {
             "huggingface": {
-                "harrier": model_spec,
+                "shared": {
+                    "model": "intfloat/multilingual-e5-small",
+                    "use_query_prefix": True,
+                    "use_passage_prefix": True,
+                    "query_prompt_name": "search_query",
+                    "passage_prompt_name": "search_document",
+                }
             },
-            "device": "cpu",
-        },
-    }
-
-
-def test_parse_model_configs_uses_explicit_prompt_names() -> None:
-    config = _minimal_config(
-        {
-            "model": "microsoft/harrier-oss-v1-270m",
-            "query_prompt_name": "web_search_query",
-            "passage_prompt_name": "sts_query",
+            "colbert": {"shared": "answerdotai/answerai-colbert-small-v1"},
+            "openrouter": {
+                "models": {
+                    "shared": "openai/text-embedding-3-small",
+                    "remote": "qwen/qwen3-embedding-8b",
+                }
+            },
         }
-    )
-
-    model_config = parse_model_configs(config)[0]
-
-    assert model_config["query_encode_kwargs"] == {
-        "prompt_name": "web_search_query",
-    }
-    assert model_config["passage_encode_kwargs"] == {
-        "prompt_name": "sts_query",
-    }
-    assert model_config["query_cache_identity"] == {
-        "query_encode_kwargs": {"prompt_name": "web_search_query"},
-    }
-    assert model_config["passage_cache_identity"] == {
-        "passage_encode_kwargs": {"prompt_name": "sts_query"},
-    }
-    assert model_config["cache_identity"] == {
-        "query_encode_kwargs": {"prompt_name": "web_search_query"},
-        "passage_encode_kwargs": {"prompt_name": "sts_query"},
     }
 
+    model_configs = parse_model_configs(config)
 
-def test_parse_model_configs_omits_default_cache_identity() -> None:
-    config = _minimal_config("sentence-transformers/all-MiniLM-L6-v2")
+    assert [model["model_name"] for model in model_configs] == [
+        "shared_hf",
+        "shared_colbert",
+        "shared_or",
+        "remote",
+    ]
+    assert [
+        (model["is_openrouter"], model["is_colbert"]) for model in model_configs
+    ] == [(False, False), (False, True), (True, False), (True, False)]
+    assert model_configs[0]["cache_identity"] == {
+        "query_prefix": "query: ",
+        "query_encode_kwargs": {"prompt_name": "search_query"},
+        "passage_prefix": "passage: ",
+        "passage_encode_kwargs": {"prompt_name": "search_document"},
+    }
 
-    model_config = parse_model_configs(config)[0]
 
-    assert model_config["query_cache_identity"] == {}
-    assert model_config["passage_cache_identity"] == {}
-    assert model_config["cache_identity"] == {}
-
-
-def test_validate_config_rejects_non_string_prompt_names() -> None:
-    config = _minimal_config(
-        {
-            "model": "microsoft/harrier-oss-v1-270m",
-            "query_prompt_name": 123,
-        }
-    )
+@pytest.mark.parametrize("invalid_value", [123, "", "   ", None])
+def test_validate_config_rejects_invalid_prompt_names(
+    valid_config: dict[str, Any], invalid_value: object
+) -> None:
+    config = deepcopy(valid_config)
+    config["embeddings"]["huggingface"]["mini"] = {
+        "model": "microsoft/harrier-oss-v1-270m",
+        "query_prompt_name": invalid_value,
+    }
 
     errors = validate_config(config)
 
-    assert any("harrier.query_prompt_name" in error for error in errors)
+    assert len(errors) == 1
+    assert "mini.query_prompt_name" in errors[0]
 
 
-def test_cache_keys_include_prompt_identity() -> None:
-    unprompted = generate_cache_key(
-        "project_dataset",
-        "microsoft/harrier-oss-v1-270m",
+def test_validate_config_accepts_complete_config(
+    valid_config: dict[str, Any],
+) -> None:
+    assert validate_config(valid_config) == []
+
+
+def test_embedding_cache_key_is_stable_and_input_sensitive() -> None:
+    identity = {
+        "query_encode_kwargs": {"prompt_name": "search"},
+        "query_prefix": "query: ",
+    }
+
+    key = generate_cache_key("project", "org/model", "queries", identity)
+
+    assert key == generate_cache_key(
+        "project",
+        "org/model",
         "queries",
-        cache_identity={},
+        dict(reversed(identity.items())),
     )
-    prompted = generate_cache_key(
-        "project_dataset",
-        "microsoft/harrier-oss-v1-270m",
-        "queries",
-        cache_identity={"query_encode_kwargs": {"prompt_name": "web_search_query"}},
+    assert key != generate_cache_key("project", "org/model", "documents", identity)
+    assert key != generate_cache_key("project", "org/model", "queries", {})
+
+
+def test_eval_cache_key_normalizes_metric_and_identity_order() -> None:
+    metrics = {"mrr": [10, 1], "hit_rate": [10]}
+    identity = {
+        "query_encode_kwargs": {"prompt_name": "search"},
+        "query_prefix": "query: ",
+    }
+
+    key = generate_eval_cache_key(
+        "project", "org/model", 0.5, 10, "model", metrics, identity
     )
 
-    assert unprompted != prompted
-
-
-def test_eval_cache_keys_include_prompt_identity() -> None:
-    unprompted = generate_eval_cache_key(
-        "project_dataset",
-        "microsoft/harrier-oss-v1-270m",
+    assert key == generate_eval_cache_key(
+        "project",
+        "org/model",
         0.5,
         10,
-        "harrier",
-        {"mrr": [10], "hit_rate": [10]},
-        cache_identity={},
+        "model",
+        {"hit_rate": [10], "mrr": [1, 10]},
+        dict(reversed(identity.items())),
     )
-    prompted = generate_eval_cache_key(
-        "project_dataset",
-        "microsoft/harrier-oss-v1-270m",
-        0.5,
-        10,
-        "harrier",
-        {"mrr": [10], "hit_rate": [10]},
-        cache_identity={"query_encode_kwargs": {"prompt_name": "web_search_query"}},
+    assert key != generate_eval_cache_key(
+        "project", "org/model", 0.7, 10, "model", metrics, identity
+    )
+    assert key != generate_eval_cache_key(
+        "project", "org/model", 0.5, 10, "other", metrics, identity
     )
 
-    assert unprompted != prompted
+
+def test_mteb_data_builds_string_keyed_views_and_filters_negative_qrels() -> None:
+    data = MTEBRetrievalData(
+        corpus=pd.DataFrame(
+            [
+                {"id": 10, "title": "First", "text": "alpha"},
+                {"id": 20, "title": "Second", "text": "beta"},
+            ]
+        ),
+        queries=pd.DataFrame([{"id": 1, "text": "find alpha"}]),
+        qrels=pd.DataFrame(
+            [
+                {"query-id": 1, "corpus-id": 10, "score": 2},
+                {"query-id": 1, "corpus-id": 20, "score": 0},
+            ]
+        ),
+    )
+
+    assert data.corpus_dict["10"] == {
+        "id": "10",
+        "text": "alpha",
+        "title": "First",
+    }
+    assert data.get_documents_list() == [
+        {"id": "10", "text": "alpha"},
+        {"id": "20", "text": "beta"},
+    ]
+    assert data.get_queries_list() == [
+        {"id": "1", "query": "find alpha", "relevant_ids": ["10"]}
+    ]
+    assert (data.num_documents, data.num_queries, data.num_qrels) == (2, 1, 2)
+
+
+def test_mteb_data_defaults_missing_relevance_scores() -> None:
+    qrels = pd.DataFrame([{"query-id": "q1", "corpus-id": "d1"}])
+
+    data = MTEBRetrievalData(
+        corpus=pd.DataFrame([{"id": "d1", "text": "document"}]),
+        queries=pd.DataFrame([{"id": "q1", "text": "query"}]),
+        qrels=qrels,
+    )
+
+    assert qrels["score"].tolist() == [1]
+    assert data.get_queries_list()[0]["relevant_ids"] == ["d1"]
+
+
+@pytest.mark.parametrize(
+    ("corpus", "queries", "qrels", "message"),
+    [
+        (
+            pd.DataFrame({"id": ["d1"]}),
+            pd.DataFrame({"id": ["q1"], "text": ["query"]}),
+            pd.DataFrame({"query-id": ["q1"], "corpus-id": ["d1"]}),
+            "Corpus must have",
+        ),
+        (
+            pd.DataFrame({"id": ["d1"], "text": ["document"]}),
+            pd.DataFrame({"text": ["query"]}),
+            pd.DataFrame({"query-id": ["q1"], "corpus-id": ["d1"]}),
+            "Queries must have",
+        ),
+        (
+            pd.DataFrame({"id": ["d1"], "text": ["document"]}),
+            pd.DataFrame({"id": ["q1"], "text": ["query"]}),
+            pd.DataFrame({"query-id": ["q1"]}),
+            "Qrels must have",
+        ),
+    ],
+)
+def test_mteb_data_rejects_missing_required_columns(
+    corpus: pd.DataFrame,
+    queries: pd.DataFrame,
+    qrels: pd.DataFrame,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        MTEBRetrievalData(corpus, queries, qrels)
+
+
+def test_load_mteb_data_from_directory(tmp_path: Path) -> None:
+    pd.DataFrame([{"id": "d1", "text": "document"}]).to_parquet(
+        tmp_path / "corpus.parquet"
+    )
+    pd.DataFrame([{"id": "q1", "text": "query"}]).to_parquet(
+        tmp_path / "queries.parquet"
+    )
+    pd.DataFrame([{"query-id": "q1", "corpus-id": "d1"}]).to_parquet(
+        tmp_path / "qrels.parquet"
+    )
+
+    data = load_mteb_retrieval_data_from_dir(str(tmp_path))
+
+    assert data.get_queries_list() == [
+        {"id": "q1", "query": "query", "relevant_ids": ["d1"]}
+    ]
+
+
+def test_embedding_cache_round_trips_array_and_metadata(tmp_path: Path) -> None:
+    embeddings = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    metadata = {"model": "example", "count": 2}
+
+    saved_path = save_embeddings(embeddings, "cache", tmp_path, metadata)
+
+    loaded_embeddings, loaded_metadata = load_embeddings("cache", tmp_path)
+    assert saved_path == tmp_path / "cache.npy"
+    assert embeddings_exist("cache", tmp_path)
+    np.testing.assert_array_equal(loaded_embeddings, embeddings)
+    assert loaded_metadata == metadata
+
+
+def test_colbert_cache_round_trips_variable_length_arrays(tmp_path: Path) -> None:
+    embeddings = [
+        np.ones((2, 3), dtype=np.float32),
+        np.zeros((4, 3), dtype=np.float32),
+    ]
+
+    save_colbert_embeddings(embeddings, "cache", tmp_path, {"model": "colbert"})
+
+    loaded, metadata = load_colbert_embeddings("cache", tmp_path)
+    assert colbert_embeddings_exist("cache", tmp_path)
+    assert [array.shape for array in loaded] == [(2, 3), (4, 3)]
+    assert metadata == {"model": "colbert", "is_colbert": True}
+
+
+def test_eval_cache_round_trips_results(tmp_path: Path) -> None:
+    results = {"mrr@10": 0.75, "hit_rate@10": 1.0}
+
+    save_eval_results(results, "cache", tmp_path)
+
+    assert eval_results_exist("cache", tmp_path)
+    assert load_eval_results("cache", tmp_path) == results
+
+
+@pytest.mark.parametrize(
+    ("retrieved", "relevant", "expected"),
+    [
+        (["d1", "d2"], ["d1"], 1.0),
+        (["d1", "d2", "d3"], ["d2", "d3"], 0.5),
+        (["d1"], ["missing"], 0.0),
+        ([], ["d1"], 0.0),
+    ],
+)
+def test_calculate_reciprocal_rank(
+    retrieved: list[str], relevant: list[str], expected: float
+) -> None:
+    assert calculate_reciprocal_rank(retrieved, relevant) == expected
+
+
+@pytest.mark.parametrize(
+    ("retrieved", "relevant", "expected"),
+    [
+        (["d1", "d2"], ["d2"], 1),
+        (["d1"], ["missing"], 0),
+        ([], ["d1"], 0),
+    ],
+)
+def test_calculate_hit(
+    retrieved: list[str], relevant: list[str], expected: int
+) -> None:
+    assert calculate_hit(retrieved, relevant) == expected
 
 
 class _FakeEmbeddings(torch.nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, position_ids: object) -> None:
         super().__init__()
-        self.register_buffer(
-            "position_ids",
-            torch.tensor([0, 4320601048, -1], dtype=torch.long),
-            persistent=False,
-        )
-
-
-class _FakeAutoModel:
-    def __init__(self) -> None:
-        self.embeddings = _FakeEmbeddings()
-
-
-class _FakeTransformerModule:
-    def __init__(self) -> None:
-        self.auto_model = _FakeAutoModel()
+        if isinstance(position_ids, torch.Tensor):
+            self.register_buffer("position_ids", position_ids, persistent=False)
+        else:
+            self.position_ids = position_ids
 
 
 class _FakeSentenceTransformer:
-    def __init__(self) -> None:
-        self.module = _FakeTransformerModule()
+    def __init__(self, position_ids: object) -> None:
+        embeddings = _FakeEmbeddings(position_ids)
+        auto_model = SimpleNamespace(embeddings=embeddings)
+        self.module = SimpleNamespace(auto_model=auto_model)
 
-    def _first_module(self) -> _FakeTransformerModule:
+    def _first_module(self) -> object:
         return self.module
 
 
 def test_repair_snowflake_position_ids_resets_corrupted_buffer() -> None:
-    model = _FakeSentenceTransformer()
+    model = _FakeSentenceTransformer(
+        torch.tensor([0, 4320601048, -1], dtype=torch.long)
+    )
 
     repaired = repair_snowflake_position_ids(
         model,
@@ -154,16 +333,18 @@ def test_repair_snowflake_position_ids_resets_corrupted_buffer() -> None:
     assert model.module.auto_model.embeddings.position_ids.tolist() == [0, 1, 2]
 
 
-def test_repair_snowflake_position_ids_ignores_other_models() -> None:
-    model = _FakeSentenceTransformer()
+@pytest.mark.parametrize(
+    ("model_id", "position_ids"),
+    [
+        ("sentence-transformers/all-MiniLM-L6-v2", torch.tensor([5, -1])),
+        ("Snowflake/model", torch.arange(3)),
+        ("Snowflake/model", torch.ones((2, 2))),
+        ("Snowflake/model", [0, 1]),
+    ],
+)
+def test_repair_snowflake_position_ids_leaves_inapplicable_buffers_unchanged(
+    model_id: str, position_ids: object
+) -> None:
+    model = _FakeSentenceTransformer(position_ids)
 
-    repaired = repair_snowflake_position_ids(
-        model, "sentence-transformers/all-MiniLM-L6-v2"
-    )
-
-    assert repaired is False
-    assert model.module.auto_model.embeddings.position_ids.tolist() == [
-        0,
-        4320601048,
-        -1,
-    ]
+    assert repair_snowflake_position_ids(model, model_id) is False
