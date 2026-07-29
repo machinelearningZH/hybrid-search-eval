@@ -593,24 +593,6 @@ def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
     return config
 
 
-def load_parquet(file_path: str) -> pd.DataFrame:
-    """Load parquet file.
-
-    Args:
-        file_path: Path to the parquet file to load
-
-    Returns:
-        DataFrame containing the parquet file contents
-
-    Raises:
-        FileNotFoundError: If parquet file doesn't exist
-    """
-    parquet_file = Path(file_path)
-    if not parquet_file.exists():
-        raise FileNotFoundError(f"Parquet file not found: {file_path}")
-    return pd.read_parquet(file_path)
-
-
 def load_data(file_path: str) -> pd.DataFrame:
     """Load data from CSV or Parquet file.
 
@@ -894,21 +876,6 @@ def get_openrouter_embeddings(
         all_embeddings.extend(batch_embeddings)
 
     return np.array(all_embeddings, dtype=np.float32)
-
-
-def is_openrouter_model(model_name: str) -> bool:
-    """Check if a model name refers to an OpenRouter embedding model.
-
-    OpenRouter models typically use the format "provider/model-name".
-
-    Args:
-        model_name: Name of the embedding model to check
-
-    Returns:
-        True if the model is an OpenRouter model, False otherwise
-    """
-    # OpenRouter models use provider/model format
-    return "/" in model_name
 
 
 def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
