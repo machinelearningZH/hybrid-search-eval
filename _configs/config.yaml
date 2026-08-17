@@ -29,6 +29,7 @@ embeddings:
       model: intfloat/multilingual-e5-small
       use_query_prefix: true
       use_passage_prefix: true
+    # malteos-most-embed-de: malteos/most-embed-de
     # e5-base:
     #   model: intfloat/multilingual-e5-base
     #   use_query_prefix: true
