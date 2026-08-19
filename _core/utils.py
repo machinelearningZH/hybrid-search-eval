@@ -697,6 +697,9 @@ class MTEBRetrievalData:
     - qrels: DataFrame with columns ['query-id', 'corpus-id'] (optionally 'score')
       If 'score' is missing, a default score of 1 is assumed (binary relevance).
 
+    Every query must have at least one qrel with a score greater than zero. Queries
+    without a positive judgment are rejected rather than evaluated as zero-scoring.
+
     Attributes:
         corpus: DataFrame containing corpus documents
         queries: DataFrame containing queries
@@ -720,9 +723,10 @@ class MTEBRetrievalData:
             qrels: DataFrame with columns ['query-id', 'corpus-id'] (optionally 'score')
                    If 'score' is missing, a default score of 1 is assumed.
         """
-        self.corpus = corpus
-        self.queries = queries
-        self.qrels = qrels
+        # Keep validation and normalization from changing caller-owned tables.
+        self.corpus = corpus.copy(deep=True)
+        self.queries = queries.copy(deep=True)
+        self.qrels = qrels.copy(deep=True)
 
         # Validate required columns
         self._validate()
@@ -730,8 +734,45 @@ class MTEBRetrievalData:
         # Build dictionaries for fast lookup
         self._build_dicts()
 
+    @staticmethod
+    def _normalize_id(value: Any) -> str:
+        """Return the canonical string representation used by lookup dictionaries."""
+        return str(value)
+
+    @classmethod
+    def _validate_and_normalize_ids(
+        cls, table: pd.DataFrame, table_name: str, field: str
+    ) -> pd.Series:
+        """Validate IDs and return the canonical string-valued series."""
+        null_mask = table[field].isna()
+        if null_mask.any():
+            count = int(null_mask.sum())
+            raise ValueError(f"{table_name}.{field} contains {count} null ID(s)")
+
+        normalized = table[field].map(cls._normalize_id)
+        duplicate_mask = normalized.duplicated(keep=False)
+        if duplicate_mask.any():
+            duplicate_ids = normalized[duplicate_mask].drop_duplicates().tolist()
+            sample = duplicate_ids[0]
+            raise ValueError(
+                f"{table_name}.{field} contains {len(duplicate_ids)} duplicate "
+                f"ID(s) after string normalization; sample ID: {sample}"
+            )
+        return normalized
+
+    @staticmethod
+    def _validate_text(table: pd.DataFrame, table_name: str) -> None:
+        invalid_mask = ~table["text"].map(lambda value: isinstance(value, str))
+        if invalid_mask.any():
+            count = int(invalid_mask.sum())
+            sample_id = table.loc[invalid_mask, "id"].iloc[0]
+            raise ValueError(
+                f"{table_name}.text contains {count} null or non-string value(s); "
+                f"sample ID: {sample_id}"
+            )
+
     def _validate(self) -> None:
-        """Validate that required columns exist."""
+        """Validate and normalize the retrieval dataset boundary."""
         # Corpus validation
         if "id" not in self.corpus.columns or "text" not in self.corpus.columns:
             raise ValueError("Corpus must have 'id' and 'text' columns")
@@ -745,9 +786,69 @@ class MTEBRetrievalData:
         if not required_qrels_cols.issubset(self.qrels.columns):
             raise ValueError(f"Qrels must have columns: {required_qrels_cols}")
 
+        for table, table_name in (
+            (self.corpus, "corpus"),
+            (self.queries, "queries"),
+            (self.qrels, "qrels"),
+        ):
+            if table.empty:
+                raise ValueError(f"{table_name} table is empty")
+
+        self._validate_text(self.corpus, "corpus")
+        self._validate_text(self.queries, "queries")
+        self.corpus["id"] = self._validate_and_normalize_ids(
+            self.corpus, "corpus", "id"
+        )
+        self.queries["id"] = self._validate_and_normalize_ids(
+            self.queries, "queries", "id"
+        )
+
+        for field in ("query-id", "corpus-id"):
+            null_mask = self.qrels[field].isna()
+            if null_mask.any():
+                count = int(null_mask.sum())
+                raise ValueError(f"qrels.{field} contains {count} null ID(s)")
+            self.qrels[field] = self.qrels[field].map(self._normalize_id)
+
         # Add default score of 1 if score column is missing (binary relevance)
         if "score" not in self.qrels.columns:
             self.qrels["score"] = 1
+
+        numeric_scores = pd.to_numeric(self.qrels["score"], errors="coerce")
+        invalid_score_mask = numeric_scores.isna() | ~np.isfinite(numeric_scores)
+        if invalid_score_mask.any():
+            count = int(invalid_score_mask.sum())
+            sample_id = self.qrels.loc[invalid_score_mask, "query-id"].iloc[0]
+            raise ValueError(
+                f"qrels.score contains {count} non-numeric or non-finite value(s); "
+                f"sample query ID: {sample_id}"
+            )
+        self.qrels["score"] = numeric_scores
+
+        corpus_ids = set(self.corpus["id"])
+        query_ids = set(self.queries["id"])
+        reference_checks = (
+            ("query-id", query_ids),
+            ("corpus-id", corpus_ids),
+        )
+        for field, known_ids in reference_checks:
+            missing_mask = ~self.qrels[field].isin(known_ids)
+            if missing_mask.any():
+                count = int(missing_mask.sum())
+                sample_id = self.qrels.loc[missing_mask, field].iloc[0]
+                raise ValueError(
+                    f"qrels.{field} contains {count} reference(s) missing from its "
+                    f"source table; sample ID: {sample_id}"
+                )
+
+        positive_query_ids = set(self.qrels.loc[self.qrels["score"] > 0, "query-id"])
+        queries_without_positive_qrels = query_ids - positive_query_ids
+        if queries_without_positive_qrels:
+            sample_id = min(queries_without_positive_qrels)
+            raise ValueError(
+                f"queries contains {len(queries_without_positive_qrels)} query ID(s) "
+                f"without positive qrels; sample ID: {sample_id}"
+            )
 
     def _build_dicts(self) -> None:
         """Build dictionary representations for fast lookup."""
@@ -771,11 +872,11 @@ class MTEBRetrievalData:
             }
 
         # Qrels dict: query_id -> {corpus_id: score}
-        self.qrels_dict: dict[str, dict[str, int]] = {}
+        self.qrels_dict: dict[str, dict[str, int | float]] = {}
         for _, row in self.qrels.iterrows():
             query_id = str(row["query-id"])
             corpus_id = str(row["corpus-id"])
-            score = int(row["score"])
+            score = row["score"]
 
             if query_id not in self.qrels_dict:
                 self.qrels_dict[query_id] = {}

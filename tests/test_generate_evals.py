@@ -19,7 +19,7 @@ def test_get_metric_k_values_supports_independent_and_legacy_configuration() -> 
     assert get_metric_k_values({}) == {"mrr": [10], "hit_rate": [10]}
 
 
-def test_get_max_k_finds_maximum_and_handles_no_metrics() -> None:
+def test_get_max_k_finds_maximum() -> None:
     assert get_max_k({"mrr": [1, 5], "hit_rate": [10]}) == 10
 
 

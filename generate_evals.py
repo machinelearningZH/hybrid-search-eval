@@ -129,6 +129,8 @@ def get_metric_k_values(config: dict) -> dict[str, list[int]]:
     """
     search_config = config.get("search", {})
     metrics_config = search_config.get("metrics", {})
+    if not isinstance(metrics_config, dict):
+        raise TypeError("metric cutoffs must be configured as a dictionary")
 
     # Default K values if not specified
     default_k = [10]
@@ -138,10 +140,39 @@ def get_metric_k_values(config: dict) -> dict[str, list[int]]:
     if isinstance(legacy_k, int):
         legacy_k = [legacy_k]
 
-    return {
+    metric_k_values = {
         "mrr": metrics_config.get("mrr_k", legacy_k),
         "hit_rate": metrics_config.get("hit_rate_k", legacy_k),
     }
+    validate_metric_k_values(metric_k_values)
+    return metric_k_values
+
+
+def validate_metric_k_values(metric_k_values: object) -> None:
+    """Validate the complete set of supported metric cutoff lists."""
+    if not isinstance(metric_k_values, dict):
+        raise TypeError("metric cutoffs must be a dictionary")
+
+    expected_metrics = {"mrr", "hit_rate"}
+    actual_metrics = set(metric_k_values)
+    if actual_metrics != expected_metrics:
+        raise ValueError(
+            "metric cutoffs must contain exactly 'mrr' and 'hit_rate'; "
+            f"got {sorted(map(str, actual_metrics))}"
+        )
+
+    for metric_name in sorted(expected_metrics):
+        cutoffs = metric_k_values[metric_name]
+        if not isinstance(cutoffs, list) or not cutoffs:
+            raise ValueError(
+                f"metric cutoffs for '{metric_name}' must be a non-empty list"
+            )
+        for index, cutoff in enumerate(cutoffs):
+            if isinstance(cutoff, bool) or not isinstance(cutoff, int) or cutoff <= 0:
+                raise ValueError(
+                    f"metric cutoffs for '{metric_name}' contain invalid value at "
+                    f"index {index}: {cutoff!r}; expected a positive integer"
+                )
 
 
 def get_max_k(metric_k_values: dict[str, list[int]]) -> int:
@@ -153,10 +184,11 @@ def get_max_k(metric_k_values: dict[str, list[int]]) -> int:
     Returns:
         Maximum K value needed for retrieval
     """
+    validate_metric_k_values(metric_k_values)
     all_k = []
     for k_list in metric_k_values.values():
         all_k.extend(k_list)
-    return max(all_k) if all_k else 10
+    return max(all_k)
 
 
 def compute_metrics(
@@ -172,6 +204,10 @@ def compute_metrics(
     Returns:
         Dictionary of metric results (e.g., {"mrr@10": 0.85, "hit_rate@10": 0.92})
     """
+    validate_metric_k_values(metric_k_values)
+    if not all_retrieved_ids:
+        raise ValueError("query result collection cannot be empty")
+
     results: dict[str, float] = {}
 
     # Compute MRR at each configured K

@@ -251,12 +251,10 @@ def test_mteb_data_rejects_empty_tables(
 def test_mteb_data_rejects_null_or_non_string_text(
     table: str, bad_text: object
 ) -> None:
-    corpus = pd.DataFrame([{"id": "d1", "text": "document"}])
-    queries = pd.DataFrame([{"id": "q1", "text": "query"}])
-    if table == "corpus":
-        corpus.loc[0, "text"] = bad_text
-    else:
-        queries.loc[0, "text"] = bad_text
+    corpus_text = bad_text if table == "corpus" else "document"
+    query_text = bad_text if table == "queries" else "query"
+    corpus = pd.DataFrame([{"id": "d1", "text": corpus_text}], dtype=object)
+    queries = pd.DataFrame([{"id": "q1", "text": query_text}], dtype=object)
 
     with pytest.raises(ValueError, match=rf"{table}.*text.*1"):
         MTEBRetrievalData(
@@ -297,15 +295,16 @@ def test_mteb_data_rejects_non_numeric_or_non_finite_scores(score: object) -> No
         MTEBRetrievalData(
             pd.DataFrame([{"id": "d1", "text": "document"}]),
             pd.DataFrame([{"id": "q1", "text": "query"}]),
-            pd.DataFrame(
-                [{"query-id": "q1", "corpus-id": "d1", "score": score}]
-            ),
+            pd.DataFrame([{"query-id": "q1", "corpus-id": "d1", "score": score}]),
         )
 
 
 @pytest.mark.parametrize(
     ("qrel_field", "qrel_id", "missing_id"),
-    [("query-id", "missing-query", "missing-query"), ("corpus-id", "missing-doc", "missing-doc")],
+    [
+        ("query-id", "missing-query", "missing-query"),
+        ("corpus-id", "missing-doc", "missing-doc"),
+    ],
 )
 def test_mteb_data_rejects_qrels_with_missing_references(
     qrel_field: str, qrel_id: str, missing_id: str
@@ -325,9 +324,7 @@ def test_mteb_data_rejects_queries_without_positive_qrels() -> None:
     with pytest.raises(ValueError, match=r"queries.*positive qrels.*q2"):
         MTEBRetrievalData(
             pd.DataFrame([{"id": "d1", "text": "document"}]),
-            pd.DataFrame(
-                [{"id": "q1", "text": "one"}, {"id": "q2", "text": "two"}]
-            ),
+            pd.DataFrame([{"id": "q1", "text": "one"}, {"id": "q2", "text": "two"}]),
             pd.DataFrame(
                 [
                     {"query-id": "q1", "corpus-id": "d1", "score": 2.5},
