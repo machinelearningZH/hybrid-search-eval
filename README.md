@@ -1,5 +1,13 @@
 # Hybrid Search Evaluation Tool
 
+![GitHub License](https://img.shields.io/github/license/machinelearningZH/hybrid-search-eval)
+[![PyPI - Python](https://img.shields.io/badge/python-v3.12+-blue.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
+[![GitHub Stars](https://img.shields.io/github/stars/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/stargazers)
+[![GitHub Issues](https://img.shields.io/github/issues/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/issues)
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval.svg)](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval)
+[![Current Version](https://img.shields.io/badge/version-0.3.0-green.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
+<a href="https://github.com/astral-sh/ruff"><img alt="linting - Ruff" class="off-glb" loading="lazy" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
+
 Benchmark embedding models for hybrid retrieval with BM25 and vector search. The
 tool evaluates local Sentence Transformers, OpenRouter embedding models, and
 ColBERT late-interaction models against an [MTEB 2.x](https://github.com/embeddings-benchmark/mteb)
