@@ -1,446 +1,220 @@
 # Hybrid Search Evaluation Tool
 
-**A framework for benchmarking embedding models in hybrid search scenarios (BM25 + vector search) using Weaviate. Measure MRR@K, Hit@K, embedding latency, and memory consumption. Bring your own data or use MTEB-compatible datasets.**
+Benchmark embedding models for hybrid retrieval with BM25 and vector search. The
+tool evaluates local Sentence Transformers, OpenRouter embedding models, and
+ColBERT late-interaction models against an [MTEB 2.x](https://github.com/embeddings-benchmark/mteb)
+retrieval dataset using Weaviate.
 
-![GitHub License](https://img.shields.io/github/license/machinelearningZH/hybrid-search-eval)
-[![PyPI - Python](https://img.shields.io/badge/python-v3.12+-blue.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
-[![GitHub Stars](https://img.shields.io/github/stars/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/stargazers)
-[![GitHub Issues](https://img.shields.io/github/issues/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval.svg)](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval)
-[![Current Version](https://img.shields.io/badge/version-0.2.0-green.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
-<a href="https://github.com/astral-sh/ruff"><img alt="linting - Ruff" class="off-glb" loading="lazy" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
+It reports MRR@K, Hit Rate@K, corpus-embedding latency, and a process-memory
+estimate for each configured model and alpha value.
 
-![Dashboard](_imgs/05_dashboard.png)
-![Chart MRR](_imgs/01_mrr.png)
-![Chart Latency](_imgs/02_latency.png)
-![Chart Memory](_imgs/03_memory.png)
+![Example evaluation dashboard](_imgs/05_dashboard.png)
 
-> [!NOTE]
-> The charts above are from a sample evaluation using synthetic data. Actual results will vary based on the dataset and models used. Results do not reflect general performance of the models.
+## Install
 
-## Key Features
-
-- **Flexible model integration**: Sentence Transformers and OpenRouter embedding models
-- **Hybrid search evaluation**: BM25, vector search, and configurable alpha blending
-- **Bring your own data**: Support for custom documents
-- **LLM-based query generation**: OpenRouter (cloud) or Ollama (local)
-- **ColBERT support**: Multi-vector embeddings with MaxSim scoring via [PyLate](https://github.com/lightonai/pylate)
-- **MTEB compatible**: Any MTEB 2.x retrieval dataset can be used out of the box
-- **Smart caching**: Hash-based caching of embeddings and evaluation results
-- **Metrics and visualization**: MRR@K, Hit@K (success rate), embedding latency, and memory consumption charts
-- **Dashboard summary**: Interactive, sortable and filterable HTML table (loads Tailwind CSS from a CDN)
-
-This tool complements our existing [semantic search evaluation framework](https://github.com/machinelearningZH/semantic-search-eval).
-
-> [!IMPORTANT]
-> Documents are truncated to `max_document_tokens` for embedding (default: 512 tokens, configurable). This affects relevance for documents exceeding this limit, and results will likely differ from benchmarks that use full document text.
-
-> [!CAUTION]
-> Sentence Transformers models are loaded with `trust_remote_code=True` by default to support custom architectures. Be aware of potential security implications when using untrusted models.
-
-## Installation
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then clone
+the project and create its environment:
 
 ```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh # macOS/Linux
-
-# Alternatively, for Windows:
-powershell -c "irm https://astral.sh/uv/install.ps1 | more"
-# Alternatively, install via pip:
-pip install uv
-
-git clone https://github.com/statistikZH/hybrid-search-eval.git
+git clone https://github.com/machinelearningZH/hybrid-search-eval.git
 cd hybrid-search-eval
 uv sync
 ```
 
-## Quick Start
+## Quick start
+
+The repository includes a small MTEB-format example dataset. Review
+[`_configs/config.yaml`](_configs/config.yaml), then run:
 
 ```bash
-# Start with our synthetic example data
 uv run generate_evals.py
-# View results in _results/ directory
 ```
 
-### 1. Bring Your Own Documents & Generate Queries
+Results are written to `_results/`; embeddings and evaluation results are cached
+in `_cache_embeddings/` and `_cache_evals/`.
 
-Start by creating search queries from your documents using an LLM. The tool accepts simple data files and outputs a complete MTEB-format dataset ready for evaluation.
-
-**Input Format:**
-
-Your input file requires a `text` column and optionally an `id` column. Supported formats: `.csv`, `.parquet`, `.pq`.
-
-**Option A: OpenRouter (Cloud)**
-
-1. Get API key from [openrouter.ai/keys](https://openrouter.ai/keys)
-2. Create `.env` file:
-   ```bash
-   cp .env.example .env
-   # Add: OPENROUTER_API_KEY=your-key-here
-   ```
-3. Generate queries from your documents:
-
-   ```bash
-   # From CSV (outputs to _data/mteb_user/ by default)
-   uv run generate_queries.py my_documents.csv
-
-   # From CSV with custom output directory
-   uv run generate_queries.py docs.csv --output-dir _data/my_dataset
-
-   # From Parquet with 5 queries per document
-   uv run generate_queries.py corpus.parquet --num-queries 5
-   ```
-
-**Option B: Ollama (Local)**
-
-1. Install Ollama: [ollama.ai](https://ollama.ai)
-2. Pull a model (e.g., Llama 3.2):
-   ```bash
-   ollama pull llama3.2:latest
-   ```
-3. Generate queries from your documents:
-
-   ```bash
-   # From CSV using local Ollama
-   uv run generate_queries.py my_documents.csv --provider ollama
-
-   # With custom model and output directory
-   uv run generate_queries.py docs.csv --provider ollama --model llama3.2:latest --output-dir _data/custom
-   ```
-
-**Query Generator Options:**
-
-- `input_file`: CSV or Parquet file with documents. Must include a `text` column.
-- `--output-dir PATH`: Output directory for MTEB dataset (default: `_data/mteb_user/`)
-- `--num-queries N`: Queries per document (default: 10)
-- `--model MODEL`: LLM model to use (overrides config)
-- `--max-workers N`: Parallel workers (overrides config, default: 25 for OpenRouter, 5 for Ollama)
-- `--provider {openrouter,ollama}`: LLM provider (default: openrouter)
-- `--config PATH`: Path to config file (default: `_configs/config.yaml`)
-- `--ollama-url URL`: Ollama API URL (default: `http://localhost:11434/v1`)
-
-### 2. Configure Data and Models
-
-Edit `_configs/config.yaml`:
+The main settings are:
 
 ```yaml
-project_id: "your-project-name"
+project_id: "my-evaluation"
 
-# MTEB 2.x format
 data:
-  mteb_data_dir: "./_data/mteb_user" # Directory with corpus.parquet, queries.parquet, qrels.parquet
+  mteb_data_dir: "./_data/mteb_user"
 
 embeddings:
   huggingface:
-    all-MiniLM-v2: sentence-transformers/all-MiniLM-L6-v2
+    all-minilm: sentence-transformers/all-MiniLM-L6-v2
     e5-small:
       model: intfloat/multilingual-e5-small
-      use_query_prefix: true # Adds "query: " prefix
-      use_passage_prefix: true # Adds "passage: " prefix
-
-  # ColBERT late-interaction models (multi-vector embeddings + MaxSim scoring)
-  # These models use token-level embeddings and only support pure semantic search (alpha=1.0)
-  colbert:
-    mxbai-edge-colbert-32m: mixedbread-ai/mxbai-edge-colbert-v0-32m
-    # answerai-colbert-small: answerdotai/answerai-colbert-small-v1
-    # GTE-ModernColBERT: lightonai/GTE-ModernColBERT-v1
-
-  openrouter:
-    models:
-      openai-3-small: openai/text-embedding-3-small # Requires OPENROUTER_API_KEY
-    settings:
-      api_batch_size: 100
-
-  device: "auto" # "cpu" | "cuda" | "mps" | "auto"
-  cache_dir: "./_cache_embeddings"
+      use_query_prefix: true
+      use_passage_prefix: true
+  device: "auto" # cpu, cuda, mps, or auto
 
 search:
-  alpha: [0.7] # 0.0=pure BM25, 1.0=pure vector
+  alpha: [0.5, 1.0] # 0.0 = BM25, 1.0 = vector search
   metrics:
-    mrr_k: [10] # Mean Reciprocal Rank @ K
-    hit_rate_k: [10] # Hit Rate (Success Rate) @ K
-  include_bm25_baseline: true # Include BM25 baseline (pure lexical search)
-
-visualization:
-  pareto_quality_metric: "mrr@10" # Compared with document embedding latency
-  metric_dynamic_xlim: true
+    mrr_k: [10]
+    hit_rate_k: [10]
+  include_bm25_baseline: true
 
 model:
   embedding_batch_size: 32
-  max_document_tokens: 512 # Maximum tokens per document for embedding
+  max_document_tokens: 512
 ```
 
-### 3. Run Evaluation
+Use a separate configuration with `--config PATH`, and pass
+`--force-recompute` after changing the data or a material retrieval or embedding
+setting.
+
+## Prepare a dataset
+
+### Generate queries from your documents
+
+`generate_queries.py` accepts CSV or Parquet input with a required `text` column
+and an optional `id` column. It creates `corpus.parquet`, `queries.parquet`, and
+`qrels.parquet` in MTEB format.
+
+For OpenRouter, create a `.env` file with `OPENROUTER_API_KEY`, then run:
 
 ```bash
-uv run generate_evals.py
+uv run generate_queries.py my_documents.csv
+uv run generate_queries.py corpus.parquet --num-queries 5 --output-dir _data/my_dataset
 ```
 
-**Options:**
-
-- `--force-recompute`: Regenerate embeddings (bypasses cache)
-- `--config PATH`: Custom config file (default: `_configs/config.yaml`)
-
-Results are saved to `_results/` with CSV data and visualizations.
-
-## Using MTEB Datasets
-
-Want to benchmark against established datasets? Download retrieval datasets from the MTEB benchmark directly from Hugging Face.
+For a local Ollama model:
 
 ```bash
-# Download full dataset
+ollama pull llama3.2:latest
+uv run generate_queries.py my_documents.csv --provider ollama --model llama3.2:latest
+```
+
+`--max-workers`, `--model`, and `--ollama-url` override the corresponding
+configuration values. To add queries to an existing MTEB corpus, use:
+
+```bash
+uv run generate_queries.py ignored --mteb-input-dir _data/mteb/scifact --num-queries 5
+```
+
+### Download an MTEB dataset
+
+```bash
 uv run download_mteb_datasets.py mteb/scifact
-
-# Reproducible query-led sample targeting 100 documents
 uv run download_mteb_datasets.py mteb/scifact --sample 100 --seed 42
-
-# Select an evaluation split when qrels provides more than one
-uv run download_mteb_datasets.py mteb/scifact --split test
-
-# Custom output directory
-uv run download_mteb_datasets.py mteb/nfcorpus --output-dir ./_data/custom
-
-# Multilingual datasets (e.g., XMarket with de, en, es)
-uv run download_mteb_datasets.py mteb/XMarket --language de
-uv run download_mteb_datasets.py mteb/XMarket --language en --sample 1000
-
-# Generate additional queries from existing MTEB corpus
-uv run generate_queries.py dummy --mteb-input-dir _data/mteb/scifact --num-queries 5
+uv run download_mteb_datasets.py mteb/XMarket --language de --split test
 ```
 
-Note: **Documents are truncated to `max_document_tokens` for embedding**, which may affect query relevance scores in MTEB data (qrels) and generally affects query relevance for documents exceeding this limit.
+Downloads are stored in `_data/mteb/` by default and include a
+`dataset_manifest.json` with the source revision, selected split/language, and
+sampling details. `--sample` uses seeded, query-led sampling and can retain more
+than the requested number of documents to preserve positive judgments. Use
+`--query-sample` to select an exact number of evaluation queries first.
 
-**Options:**
-
-- `dataset_name`: Hugging Face dataset identifier (e.g., `mteb/scifact`, `mteb/nfcorpus`)
-- `--output-dir PATH`: Output directory (default: `./_data/mteb`)
-- `--sample N`: Target N documents using query-led sampling. All positive documents for selected queries are retained, so the result can exceed N.
-- `--query-sample N`: Select exactly N evaluation queries before collecting their positive documents and distractors.
-- `--seed N`: Sampling seed (default: `42`).
-- `--language LANG`: Language code for multilingual datasets. Required when multiple complete language configurations exist.
-- `--split SPLIT`: Evaluation split. Required when qrels provides multiple splits.
-- `--revision REV`: Hugging Face dataset revision (default: `main`).
-
-Each download includes `dataset_manifest.json` with the repository revision,
-language, selected configurations and splits, source fingerprints, sampling
-parameters, counts, positive-document coverage, and judgments per query.
-
-**Popular MTEB retrieval datasets:**
-
-- [`mteb/scifact`](https://huggingface.co/datasets/mteb/scifact) - Scientific claims verification / evidence retrieval (5,183 docs)
-- [`mteb/nfcorpus`](https://huggingface.co/datasets/mteb/nfcorpus) - Medical / nutrition information retrieval (3,633 docs)
-- [`mteb/scidocs`](https://huggingface.co/datasets/mteb/scidocs) - Scientific paper retrieval (25,657 docs)
-- [`mteb/fiqa`](https://huggingface.co/datasets/mteb/fiqa) - Financial Q&A retrieval (FiQA-2018) (57,638 docs)
-- [`mteb/arguana`](https://huggingface.co/datasets/mteb/arguana) - Counter-argument retrieval (8,674 docs)
-- [`mteb/XMarket`](https://huggingface.co/datasets/mteb/XMarket) - Cross-market product search (multilingual: de, en, es; de-corpus: ≈70.5k docs)
-
-**German MTEB retrieval datasets:**
-
-- [`mteb/GermanDPR`](https://huggingface.co/datasets/mteb/GermanDPR) - German dense passage retrieval (Wikipedia-style passages) (≈2.88k docs)
-- [`mteb/XMarket`](https://huggingface.co/datasets/mteb/XMarket) - German product search subset (de-corpus: ≈70.5k docs)
-- [`mteb/GerDaLIR`](https://huggingface.co/datasets/mteb/GerDaLIR) - German legal case retrieval (≈131k docs)
-- [`mteb/LegalQuAD`](https://huggingface.co/datasets/mteb/LegalQuAD) - German legal Q&A retrieval (600 docs)
-
-See more available datasets at: [huggingface.co/mteb](https://huggingface.co/mteb)
-
-**Helper script to list retrieval datasets:**
+To inspect available retrieval datasets:
 
 ```bash
-uv run list_retrieval_datasets.py
 uv run list_retrieval_datasets.py --benchmark "MTEB(eng, v2)"
-# Defaults to v2 (and normalizes de -> deu)
-uv run list_retrieval_datasets.py --benchmark "MTEB(de)"
-
-uv run list_retrieval_datasets.py --format csv --out retrieval_datasets.csv
+uv run list_retrieval_datasets.py --benchmark "MTEB(de)" --format csv --out retrieval_datasets.csv
 ```
 
-## Output Visualizations
+### Required MTEB files
 
-The evaluation generates the following visualization charts:
+Set `data.mteb_data_dir` to a directory containing these files:
 
-1. **MRR (Mean Reciprocal Rank)**: Search quality comparison across models and alpha configurations. MRR measures how high the first relevant document appears in results (1/rank).
-2. **Hit Rate (Success Rate)**: Percentage of queries where a relevant document was found in the top-k results. Useful for understanding "was any relevant result found?"
-3. **Document embedding latency**: Time taken to embed the corpus. It excludes query embedding, indexing, retrieval, reranking, and result-transfer time.
-4. **Process-memory estimate**: A sampled process RSS delta during local model loading and embedding. It is not a true peak measurement and does not include accelerator memory.
-5. **Model tradeoffs**: Quality versus document-embedding latency. One quality metric is selected with `visualization.pareto_quality_metric`; configurations that are not dominated on those two dimensions are highlighted. Memory estimates control local-model bubble size but are not part of Pareto classification. BM25 is excluded because zero embedding time is not comparable to end-to-end search latency. Missing memory is displayed as unknown, not zero.
+| File | Required columns |
+| --- | --- |
+| `corpus.parquet` | `id`, `text`; optional `title` |
+| `queries.parquet` | `id`, `text` |
+| `qrels.parquet` | `query-id`, `corpus-id`, `score` |
 
-![Chart Tradeoffs](_imgs/04_tradeoffs.png)
+## Models and search modes
 
-The generated HTML embeds its result data but loads Tailwind CSS from a CDN, so styled offline viewing requires network access.
+- Configure Sentence Transformers under `embeddings.huggingface`. A model entry
+  can be a model ID or a mapping with `model`, prefix options
+  (`use_query_prefix`, `use_passage_prefix`), prompt options
+  (`use_query_prompt`, `use_passage_prompt`), or explicit
+  `query_prompt_name` / `passage_prompt_name`.
+- Configure OpenRouter models under `embeddings.openrouter.models`; they require
+  `OPENROUTER_API_KEY` in `.env`. See the
+  [available embedding models](https://openrouter.ai/models?fmt=cards&output_modalities=embeddings).
+- Configure ColBERT models under `embeddings.colbert`. They use token-level
+  MaxSim scores; mixed alpha values combine those scores with BM25.
 
-## Methodological Limitations
+> [!IMPORTANT]
+> Documents are embedded only up to `model.max_document_tokens` (512 by
+> default). Their titles are not currently included in indexed text. Results can
+> therefore differ from benchmarks that use full document text or model-specific
+> tokenizers.
 
-Interpret rankings as evidence for the configured experiment, not as universal model rankings:
+> [!CAUTION]
+> Sentence Transformers models are loaded with `trust_remote_code=True` to
+> support custom architectures. Evaluate the trustworthiness of every model
+> repository before using it.
 
-- LLM-generated queries primarily test whether a system can reconstruct the source document from a paraphrase. They may not represent production traffic, ambiguous requests, or zero-result searches.
-- Generated qrels label only the source document. Other genuinely relevant documents are therefore counted as false positives.
-- Tune models, prompts, and alpha values on development queries, then report final quality once on held-out queries to avoid selection bias.
-- MRR and Hit Rate collapse positive relevance grades and do not measure how many of several relevant documents were retrieved. Add graded and recall-oriented metrics when those distinctions matter.
-- Weaviate hybrid fusion and the custom ColBERT score fusion use different score populations and normalization; equal alpha values are not directly equivalent.
-- Reported latency covers corpus embedding only. It excludes query embedding, indexing, search, network transfer, and exhaustive ColBERT scoring.
-- Reported memory is a sampled process RSS delta, not peak CPU or accelerator memory. Missing API memory is unknown rather than zero.
-- Documents are truncated with `cl100k_base`, which does not match every model tokenizer, and corpus titles are currently omitted from indexed text.
-- Full-corpus ColBERT MaxSim is a quality upper-bound experiment, not a production throughput benchmark.
-- Preserve per-query results and report uncertainty or significance before treating small aggregate differences as meaningful.
+## Outputs and interpretation
 
-## Data Format
+Each run produces CSV results, metric charts, a quality-versus-embedding-latency
+trade-off chart, a memory chart, and an interactive HTML dashboard. The dashboard
+embeds its result data but loads Tailwind CSS from a CDN, so styled viewing needs
+network access.
 
-### MTEB 2.x Format
+- **MRR@K** measures the rank of the first relevant result.
+- **Hit Rate@K** is the share of queries with at least one relevant result in the
+  top K.
+- **Latency** is corpus embedding time only; it excludes query embedding,
+  indexing, retrieval, reranking, and network transfer.
+- **Memory** is a sampled process-RSS delta. It is not a peak measurement and
+  excludes accelerator memory.
 
-This tool uses the [MTEB 2.x retrieval task specification](https://github.com/embeddings-benchmark/mteb). All files are stored in a single directory (e.g., `_data/mteb_user/`):
+Treat results as evidence for the configured experiment, not universal model
+rankings. In particular:
 
-**Corpus** (`corpus.parquet`):
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | string | Unique document identifier (e.g., `doc_0`) |
-| `text` | string | Document content |
-| `title` | string | Document title (optional, can be empty) |
+- LLM-generated queries and qrels primarily test recovery of the source document;
+  they can miss other relevant documents and do not represent production traffic.
+- MRR and Hit Rate use binary relevance and do not measure recall or graded
+  relevance. Preserve per-query results and assess uncertainty before relying on
+  small differences.
+- ColBERT MaxSim is computed exhaustively across the corpus, so it is a quality
+  upper bound rather than a production-throughput measurement. Its score fusion
+  is not directly comparable with Weaviate hybrid fusion at the same alpha.
+- Cache keys do not include dataset contents, row order, truncation limits, model
+  revisions, or every retrieval setting. Recompute after any relevant change and
+  compare runs only when their inputs and environment match.
+- Query generation saves final Parquet files but not raw responses, provider
+  revisions, or a failure manifest. Preserve those separately when auditability
+  matters.
 
-**Queries** (`queries.parquet`):
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | string | Unique query identifier (e.g., `query_0`) |
-| `text` | string | Query text |
+## Project structure
 
-**Relevance Judgments** (`qrels.parquet`):
-| Column | Type | Description |
-|--------|------|-------------|
-| `query-id` | string | Query identifier |
-| `corpus-id` | string | Relevant document identifier |
-| `score` | int | Relevance score (1 = relevant) |
+| Path | Purpose |
+| --- | --- |
+| `generate_evals.py` | Evaluation pipeline |
+| `generate_queries.py` | LLM query generation |
+| `download_mteb_datasets.py` | MTEB dataset download and sampling |
+| `list_retrieval_datasets.py` | MTEB retrieval-dataset discovery |
+| `_configs/config.yaml` | Default configuration |
+| `_data/` | MTEB datasets and user data |
 
-## Using OpenRouter Embeddings
+## Contributing
 
-OpenRouter provides access to commercial embedding models from various providers.
-
-1. Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys)
-2. Add to `.env`:
-   ```
-   OPENROUTER_API_KEY=sk-or-xxxxx
-   ```
-3. Configure in `config.yaml`:
-   ```yaml
-   embeddings:
-     openrouter:
-       models:
-         openai-3-small: openai/text-embedding-3-small
-         openai-3-large: openai/text-embedding-3-large
-         mistral-embed: mistralai/mistral-embed-2312
-         gemini-embedding: google/gemini-embedding-001
-         qwen3-embedding-4b: qwen/qwen3-embedding-4b
-       settings:
-         api_batch_size: 100 # Number of texts per API call
-   ```
-
-View available embedding models at: [openrouter.ai/models?output_modalities=embeddings](https://openrouter.ai/models?fmt=cards&output_modalities=embeddings)
-
-## Model-Specific Configuration
-
-Models can be configured as either simple strings (using defaults) or dictionaries with custom options.
-
-**Simple models** (use default settings):
-
-```yaml
-embeddings:
-  huggingface:
-    all-MiniLM-v2: sentence-transformers/all-MiniLM-L6-v2
-    jina-v2: jinaai/jina-embeddings-v2-base-de
-    granite: ibm-granite/granite-embedding-278m-multilingual
-```
-
-**Models with instruction prefixes** (e.g. E5 models):
-
-```yaml
-embeddings:
-  huggingface:
-    e5-small:
-      model: intfloat/multilingual-e5-small
-      use_query_prefix: true # Adds "query: " prefix for queries
-      use_passage_prefix: true # Adds "passage: " prefix for documents
-```
-
-**Models with encode parameters** (e.g. Snowflake models):
-
-```yaml
-embeddings:
-  huggingface:
-    snowflake-m:
-      model: Snowflake/snowflake-arctic-embed-m-v2.0
-      use_query_prompt: true # Passes prompt_name="query" to encode()
-    snowflake-l:
-      model: Snowflake/snowflake-arctic-embed-l-v2.0
-      use_query_prompt: true
-      use_passage_prompt: true # Passes prompt_name="passage" to encode()
-```
-
-**Models with named query prompts** (e.g. Microsoft Harrier retrieval models):
-
-```yaml
-embeddings:
-  huggingface:
-    harrier-oss-v1-270m:
-      model: microsoft/harrier-oss-v1-270m
-      query_prompt_name: web_search_query # Passes prompt_name="web_search_query" for queries
-```
-
-Use `query_prompt_name` or `passage_prompt_name` when a SentenceTransformer model defines named prompts beyond the generic `query` and `passage` names. Prompt and prefix settings are included in embedding and evaluation cache keys.
-
-**Device configuration:**
-
-```yaml
-embeddings:
-  device: "auto" # Options: "cpu", "cuda", "mps" (Apple Silicon), "auto"
-```
-
-Note: Some models (e.g., minishlab) don't support MPS and automatically fall back to CPU.
-
-## Caching
-
-Embeddings and evaluations are cached in `_cache_embeddings/` and `_cache_evals/`.
-
-**Cache key format:** `{project_id}_{model_short}_{data_type}_{hash[:8]}`
-
-Cache keys do not currently include dataset contents, row order, document truncation, model revisions, or all retrieval settings. Use `--force-recompute` whenever data or any material preprocessing/retrieval setting changes. Do not compare cached runs unless you have verified that their inputs and environment are identical.
-
-Query generation currently saves the final parquet files but not raw model responses, provider revisions, or a failure manifest. Preserve those details separately when the generated dataset must be auditable or reproducible.
-
-The evaluator continues after individual model failures. Until strict run-status reporting is implemented, automation should inspect the log and verify that the result CSV is non-empty and contains every expected model.
-
-## Additional Notes
-
-- ColBERT models use multi-vector embeddings with MaxSim scoring, combined with BM25 using the specified alpha. Weaviate uses the [Relative Score Fusion algorithm](https://docs.weaviate.io/weaviate/api/graphql/search-operators#relative-score-fusion) for combining hybrid rankings. We replicated this algorithm to the best of our ability; however, results may differ slightly.
-- **ColBERT evaluation note**: The ColBERT evaluation computes MaxSim scores exhaustively for all query-document pairs, rather than using ANN or first-stage candidate retrieval. This full-corpus scoring approach may overstate practical retrieval performance compared to production systems that use approximate search. Results should be interpreted as an upper bound on ColBERT quality rather than realistic retrieval latency/throughput benchmarks. For hybrid search (alpha between 0 and 1), BM25 candidates are limited by `bm25_candidate_limit` (default: 1000) to avoid performance issues with large corpora.
-
-## Project Structure
-
-- `generate_evals.py`: Main evaluation pipeline
-- `generate_queries.py`: LLM-based query generator
-- `download_mteb_datasets.py`: Download MTEB datasets from Hugging Face
-- `list_retrieval_datasets.py`: List available MTEB retrieval datasets
-- `_configs/`: Configuration files
-  - `config.yaml`: Default configuration
-- `_core/`: Core utilities (`utils.py`, `utils_prompts.py`)
-- `_data/`: Data files
-  - `mteb/`: MTEB datasets (corpus.parquet, queries.parquet, qrels.parquet)
-  - `mteb_user/`: User-generated datasets
-- `_cache_embeddings/`: Cached embeddings (_.npy + _.json)
-- `_cache_evals/`: Cached evaluation results
-- `_results/`: Final CSV results and charts
-
-## Project Team
-
-**Chantal Amrhein**, **Patrick Arnecke** – [Amt für Statistik und Daten Zürich: Team Data](https://www.zh.ch/de/direktion-der-justiz-und-des-innern/amt-fuer-statistik-und-daten/data.html)
-
-## Feedback and Contributing
-
-Feedback and contributions are welcome! [Email us](mailto:datashop@statistik.zh.ch) or open an issue or pull request.
-
-This project uses [`ruff`](https://docs.astral.sh/ruff/) for linting and formatting.
+Feedback and contributions are welcome: [email the team](mailto:datashop@statistik.zh.ch),
+open an issue, or submit a pull request. The project uses
+[Ruff](https://docs.astral.sh/ruff/) for linting and formatting.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
 
 ## Disclaimer
 
-This evaluation tool (the Software) evaluates user-defined open-source and closed-source embedding models (the Models). The Software has been developed according to and with the intent to be used under Swiss law. Please be aware that the EU Artificial Intelligence Act (EU AI Act) may, under certain circumstances, be applicable to your use of the Software. You are solely responsible for ensuring that your use of the Software as well as of the underlying Models complies with all applicable local, national and international laws and regulations. By using this Software, you acknowledge and agree (a) that it is your responsibility to assess which laws and regulations, in particular regarding the use of AI technologies, are applicable to your intended use and to comply therewith, and (b) that you will hold us harmless from any action, claims, liability or loss in respect of your use of the Software.
+This evaluation tool (the Software) evaluates user-defined open-source and
+closed-source embedding models (the Models). The Software has been developed
+according to and with the intent to be used under Swiss law. Please be aware that
+the EU Artificial Intelligence Act (EU AI Act) may, under certain circumstances,
+be applicable to your use of the Software. You are solely responsible for
+ensuring that your use of the Software as well as of the underlying Models
+complies with all applicable local, national and international laws and
+regulations. By using this Software, you acknowledge and agree (a) that it is
+your responsibility to assess which laws and regulations, in particular regarding
+the use of AI technologies, are applicable to your intended use and to comply
+therewith, and (b) that you will hold us harmless from any action, claims,
+liability or loss in respect of your use of the Software.

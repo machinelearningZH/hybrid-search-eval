@@ -38,11 +38,11 @@ embeddings:
     #   model: intfloat/multilingual-e5-large
     #   use_query_prefix: true
     #   use_passage_prefix: true
-    Nemotron-3-Embed-1B:
-      # NVFP4 is a vLLM-only checkpoint; Sentence Transformers requires BF16.
-      model: nvidia/Nemotron-3-Embed-1B-BF16
-      use_query_prefix: true
-      use_passage_prefix: true
+    # Nemotron-3-Embed-1B:
+    #   # NVFP4 is a vLLM-only checkpoint; Sentence Transformers requires BF16.
+    #   model: nvidia/Nemotron-3-Embed-1B-BF16
+    #   use_query_prefix: true
+    #   use_passage_prefix: true
     # harrier-oss-v1-270m:
     #   model: microsoft/harrier-oss-v1-270m
     #   query_prompt_name: web_search_query
