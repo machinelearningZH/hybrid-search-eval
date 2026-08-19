@@ -146,7 +146,8 @@ visualization:
   axis_label_size: 9
   row_label_size: 9
   bar_label_offset: 0.02
-  recall_dynamic_xlim: true # If true, set x-limits to ~10% below lowest and ~10% above highest recall value
+  metric_dynamic_xlim: true # Scale metric charts to the observed value range
+  pareto_quality_metric: "mrr@10" # One quality metric used with document embedding latency
 
 # Model settings
 model:

@@ -40,6 +40,8 @@ def test_load_documents_rejects_unsupported_or_incomplete_input(
 ) -> None:
     with pytest.raises(ValueError, match="Unsupported file format"):
         load_documents_from_file(tmp_path / "documents.txt")
+    with pytest.raises(ValueError, match="Supported formats: .csv, .parquet, .pq"):
+        load_documents_from_file(tmp_path / "documents.xlsx")
 
     path = tmp_path / "documents.csv"
     pd.DataFrame({"body": ["missing text column"]}).to_csv(path, index=False)

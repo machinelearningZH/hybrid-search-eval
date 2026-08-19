@@ -7,7 +7,7 @@
 [![GitHub Stars](https://img.shields.io/github/stars/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/issues)
 [![GitHub Pull Requests](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval.svg)](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval)
-[![Current Version](https://img.shields.io/badge/version-0.2-green.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
+[![Current Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
 <a href="https://github.com/astral-sh/ruff"><img alt="linting - Ruff" class="off-glb" loading="lazy" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
 
 ![Dashboard](_imgs/05_dashboard.png)
@@ -28,7 +28,7 @@
 - **MTEB compatible**: Any MTEB 2.x retrieval dataset can be used out of the box
 - **Smart caching**: Hash-based caching of embeddings and evaluation results
 - **Metrics and visualization**: MRR@K, Hit@K (success rate), embedding latency, and memory consumption charts
-- **Dashboard summary**: Interactive, sortable and filterable table of results (self-contained HTML)
+- **Dashboard summary**: Interactive, sortable and filterable HTML table (loads Tailwind CSS from a CDN)
 
 This tool complements our existing [semantic search evaluation framework](https://github.com/machinelearningZH/semantic-search-eval).
 
@@ -68,7 +68,7 @@ Start by creating search queries from your documents using an LLM. The tool acce
 
 **Input Format:**
 
-Your input file requires a `text` column and optionally an `id` column. Supported formats: `.xlsx`, `.xls`, `.csv`, `.parquet`, `.pq`
+Your input file requires a `text` column and optionally an `id` column. Supported formats: `.csv`, `.parquet`, `.pq`.
 
 **Option A: OpenRouter (Cloud)**
 
@@ -81,8 +81,8 @@ Your input file requires a `text` column and optionally an `id` column. Supporte
 3. Generate queries from your documents:
 
    ```bash
-   # From Excel file (outputs to _data/mteb_user/ by default)
-   uv run generate_queries.py my_documents.xlsx
+   # From CSV (outputs to _data/mteb_user/ by default)
+   uv run generate_queries.py my_documents.csv
 
    # From CSV with custom output directory
    uv run generate_queries.py docs.csv --output-dir _data/my_dataset
@@ -101,8 +101,8 @@ Your input file requires a `text` column and optionally an `id` column. Supporte
 3. Generate queries from your documents:
 
    ```bash
-   # From Excel using local Ollama
-   uv run generate_queries.py my_documents.xlsx --provider ollama
+   # From CSV using local Ollama
+   uv run generate_queries.py my_documents.csv --provider ollama
 
    # With custom model and output directory
    uv run generate_queries.py docs.csv --provider ollama --model llama3.2:latest --output-dir _data/custom
@@ -110,7 +110,7 @@ Your input file requires a `text` column and optionally an `id` column. Supporte
 
 **Query Generator Options:**
 
-- `input_file`: Input file with documents (Excel, CSV, or Parquet). Must include a `text` column.
+- `input_file`: CSV or Parquet file with documents. Must include a `text` column.
 - `--output-dir PATH`: Output directory for MTEB dataset (default: `_data/mteb_user/`)
 - `--num-queries N`: Queries per document (default: 10)
 - `--model MODEL`: LLM model to use (overrides config)
@@ -160,6 +160,10 @@ search:
     mrr_k: [10] # Mean Reciprocal Rank @ K
     hit_rate_k: [10] # Hit Rate (Success Rate) @ K
   include_bm25_baseline: true # Include BM25 baseline (pure lexical search)
+
+visualization:
+  pareto_quality_metric: "mrr@10" # Compared with document embedding latency
+  metric_dynamic_xlim: true
 
 model:
   embedding_batch_size: 32
@@ -245,13 +249,28 @@ The evaluation generates the following visualization charts:
 
 1. **MRR (Mean Reciprocal Rank)**: Search quality comparison across models and alpha configurations. MRR measures how high the first relevant document appears in results (1/rank).
 2. **Hit Rate (Success Rate)**: Percentage of queries where a relevant document was found in the top-k results. Useful for understanding "was any relevant result found?"
-3. **Embedding Latency**: Time taken to generate embeddings for all documents per model.
-4. **Memory Consumption**: RAM usage during model loading and embedding generation.
-5. **Model Tradeoffs**: Bubble chart showing quality vs latency vs memory tradeoffs. Bubble size indicates memory consumption. [Pareto-optimal](https://en.wikipedia.org/wiki/Pareto_front) models (best tradeoffs) are highlighted with gold edges. BM25 and API models without memory data are shown as squares. The pareto optimal models are also highlighted in the interactive dashboard.
+3. **Document embedding latency**: Time taken to embed the corpus. It excludes query embedding, indexing, retrieval, reranking, and result-transfer time.
+4. **Process-memory estimate**: A sampled process RSS delta during local model loading and embedding. It is not a true peak measurement and does not include accelerator memory.
+5. **Model tradeoffs**: Quality versus document-embedding latency. One quality metric is selected with `visualization.pareto_quality_metric`; configurations that are not dominated on those two dimensions are highlighted. Memory estimates control local-model bubble size but are not part of Pareto classification. BM25 is excluded because zero embedding time is not comparable to end-to-end search latency. Missing memory is displayed as unknown, not zero.
 
 ![Chart Tradeoffs](_imgs/04_tradeoffs.png)
 
-Note: Memory consumption is only tracked for local Hugging Face models, not for OpenRouter API models.
+The generated HTML embeds its result data but loads Tailwind CSS from a CDN, so styled offline viewing requires network access.
+
+## Methodological Limitations
+
+Interpret rankings as evidence for the configured experiment, not as universal model rankings:
+
+- LLM-generated queries primarily test whether a system can reconstruct the source document from a paraphrase. They may not represent production traffic, ambiguous requests, or zero-result searches.
+- Generated qrels label only the source document. Other genuinely relevant documents are therefore counted as false positives.
+- Tune models, prompts, and alpha values on development queries, then report final quality once on held-out queries to avoid selection bias.
+- MRR and Hit Rate collapse positive relevance grades and do not measure how many of several relevant documents were retrieved. Add graded and recall-oriented metrics when those distinctions matter.
+- Weaviate hybrid fusion and the custom ColBERT score fusion use different score populations and normalization; equal alpha values are not directly equivalent.
+- Reported latency covers corpus embedding only. It excludes query embedding, indexing, search, network transfer, and exhaustive ColBERT scoring.
+- Reported memory is a sampled process RSS delta, not peak CPU or accelerator memory. Missing API memory is unknown rather than zero.
+- Documents are truncated with `cl100k_base`, which does not match every model tokenizer, and corpus titles are currently omitted from indexed text.
+- Full-corpus ColBERT MaxSim is a quality upper-bound experiment, not a production throughput benchmark.
+- Preserve per-query results and report uncertainty or significance before treating small aggregate differences as meaningful.
 
 ## Data Format
 
@@ -370,11 +389,14 @@ Embeddings and evaluations are cached in `_cache_embeddings/` and `_cache_evals/
 
 **Cache key format:** `{project_id}_{model_short}_{data_type}_{hash[:8]}`
 
-**Note:** Cache does not auto-invalidate when data changes. Use `--force-recompute` to regenerate.
+Cache keys do not currently include dataset contents, row order, document truncation, model revisions, or all retrieval settings. Use `--force-recompute` whenever data or any material preprocessing/retrieval setting changes. Do not compare cached runs unless you have verified that their inputs and environment are identical.
+
+Query generation currently saves the final parquet files but not raw model responses, provider revisions, or a failure manifest. Preserve those details separately when the generated dataset must be auditable or reproducible.
+
+The evaluator continues after individual model failures. Until strict run-status reporting is implemented, automation should inspect the log and verify that the result CSV is non-empty and contains every expected model.
 
 ## Additional Notes
 
-- Caches are not automatically invalidated when data changes. Use `--force-recompute` to regenerate embeddings and evaluations.
 - ColBERT models use multi-vector embeddings with MaxSim scoring, combined with BM25 using the specified alpha. Weaviate uses the [Relative Score Fusion algorithm](https://docs.weaviate.io/weaviate/api/graphql/search-operators#relative-score-fusion) for combining hybrid rankings. We replicated this algorithm to the best of our ability; however, results may differ slightly.
 - **ColBERT evaluation note**: The ColBERT evaluation computes MaxSim scores exhaustively for all query-document pairs, rather than using ANN or first-stage candidate retrieval. This full-corpus scoring approach may overstate practical retrieval performance compared to production systems that use approximate search. Results should be interpreted as an upper bound on ColBERT quality rather than realistic retrieval latency/throughput benchmarks. For hybrid search (alpha between 0 and 1), BM25 candidates are limited by `bm25_candidate_limit` (default: 1000) to avoid performance issues with large corpora.
 

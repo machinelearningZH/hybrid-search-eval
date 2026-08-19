@@ -1,17 +1,19 @@
-import yaml
-import json
 import hashlib
+import json
+import math
+import os
 from pathlib import Path
 from typing import Any
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from rich.console import Console
-import tiktoken
-import os
 import requests
+import seaborn as sns
+import tiktoken
+import yaml
 from dotenv import load_dotenv
+from rich.console import Console
 
 console = Console()
 
@@ -78,15 +80,13 @@ def print_generated(
     console.print(msg)
 
 
-def print_saved_to_cache(file_path: Path, show_full_path: bool = False) -> None:
+def print_saved_to_cache(file_path: Path) -> None:
     """Print message for saved cache files.
 
     Args:
         file_path: Path to the saved cache file
-        show_full_path: If True, display full path; otherwise show only filename
     """
-    display_path = str(file_path) if show_full_path else file_path.name
-    console.print(f"   💾 Saved embeddings to: [dim]{display_path}[/dim]")
+    console.print(f"   💾 Saved embeddings to: [dim]{file_path.name}[/dim]")
 
 
 def print_saved_eval_to_cache(file_path: Path) -> None:
@@ -151,6 +151,32 @@ def truncate_text_to_tokens(
     # Truncate to max_tokens and decode back to text
     truncated_tokens = tokens[:max_tokens]
     return enc.decode(truncated_tokens)
+
+
+def get_configured_metric_names(search_config: dict[str, Any]) -> set[str]:
+    """Return result-column names implied by search metric configuration."""
+    metrics = search_config.get("metrics")
+    if isinstance(metrics, dict):
+        names = set()
+        for config_name, result_name in (
+            ("mrr_k", "mrr"),
+            ("hit_rate_k", "hit_rate"),
+        ):
+            cutoffs = metrics.get(config_name, [])
+            if isinstance(cutoffs, list):
+                names.update(f"{result_name}@{cutoff}" for cutoff in cutoffs)
+        return names
+
+    legacy_cutoffs = search_config.get("top_k", [10])
+    if isinstance(legacy_cutoffs, int):
+        legacy_cutoffs = [legacy_cutoffs]
+    if not isinstance(legacy_cutoffs, list):
+        return set()
+    return {
+        f"{metric}@{cutoff}"
+        for metric in ("mrr", "hit_rate")
+        for cutoff in legacy_cutoffs
+    }
 
 
 def validate_config(
@@ -227,11 +253,12 @@ def validate_config(
                     )
 
             # Validate cache_dir
-            if "cache_dir" in embeddings:
-                if not isinstance(embeddings["cache_dir"], str):
-                    errors.append(
-                        f"❌ 'embeddings.cache_dir' must be a string, got {type(embeddings['cache_dir']).__name__}"
-                    )
+            if "cache_dir" in embeddings and not isinstance(
+                embeddings["cache_dir"], str
+            ):
+                errors.append(
+                    f"❌ 'embeddings.cache_dir' must be a string, got {type(embeddings['cache_dir']).__name__}"
+                )
 
             # Check that at least one model source is configured
             has_huggingface = "huggingface" in embeddings and isinstance(
@@ -470,11 +497,12 @@ def validate_config(
                             )
 
             # Validate include_bm25_baseline (optional)
-            if "include_bm25_baseline" in search:
-                if not isinstance(search["include_bm25_baseline"], bool):
-                    errors.append(
-                        f"❌ 'search.include_bm25_baseline' must be a boolean (true/false), got {type(search['include_bm25_baseline']).__name__}"
-                    )
+            if "include_bm25_baseline" in search and not isinstance(
+                search["include_bm25_baseline"], bool
+            ):
+                errors.append(
+                    f"❌ 'search.include_bm25_baseline' must be a boolean (true/false), got {type(search['include_bm25_baseline']).__name__}"
+                )
 
     # Validate output section
     if "output" not in config:
@@ -505,7 +533,40 @@ def validate_config(
             errors.append(
                 f"❌ 'visualization' must be a dictionary, got {type(viz).__name__}"
             )
-        # Visualization fields are optional, so we don't validate individual fields
+        else:
+            obsolete_viz_keys = {
+                "mrr_dynamic_xlim": "metric_dynamic_xlim",
+                "recall_dynamic_xlim": "metric_dynamic_xlim",
+            }
+            for old_key, replacement in obsolete_viz_keys.items():
+                if old_key in viz:
+                    errors.append(
+                        f"❌ 'visualization.{old_key}' is obsolete; use "
+                        f"'visualization.{replacement}'"
+                    )
+            if "metric_dynamic_xlim" in viz and not isinstance(
+                viz["metric_dynamic_xlim"], bool
+            ):
+                errors.append(
+                    "❌ 'visualization.metric_dynamic_xlim' must be a boolean"
+                )
+            if "pareto_quality_metric" in viz and (
+                not isinstance(viz["pareto_quality_metric"], str)
+                or not viz["pareto_quality_metric"].strip()
+            ):
+                errors.append(
+                    "❌ 'visualization.pareto_quality_metric' must be a non-empty string"
+                )
+            elif "pareto_quality_metric" in viz and isinstance(
+                config.get("search"), dict
+            ):
+                configured_metrics = get_configured_metric_names(config["search"])
+                if viz["pareto_quality_metric"] not in configured_metrics:
+                    errors.append(
+                        "❌ 'visualization.pareto_quality_metric' must match a "
+                        "configured search metric; available values: "
+                        f"{sorted(configured_metrics)}"
+                    )
 
     # Validate model section
     if "model" not in config:
@@ -914,28 +975,29 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
     openrouter_config = embeddings_config.get("openrouter", {})
     openrouter_models = openrouter_config.get("models", {})
 
+    def get_model_id(
+        model_name: str, model_spec: str | dict[str, Any], provider_name: str
+    ) -> str | None:
+        """Return a model ID from either supported configuration form."""
+        model_id = (
+            model_spec if isinstance(model_spec, str) else model_spec.get("model")
+        )
+        if model_id:
+            return model_id
+        console.print(
+            f"⚠️  [yellow]Skipping {provider_name} model {model_name}: "
+            "no 'model' field specified[/yellow]"
+        )
+        return None
+
     hf_names = set(hf_models.keys()) if hf_models else set()
     colbert_names = set(colbert_models.keys()) if colbert_models else set()
     or_names = set(openrouter_models.keys()) if openrouter_models else set()
 
-    # Known ColBERT model identifiers (substrings to check in model IDs)
-    # These models use late-interaction and MaxSim scoring, requiring pylate
-    known_colbert_patterns = [
-        "colbert",
-        "ColBERT",
-        "answerai-colbert",
-        "GTE-ModernColBERT",
-    ]
-
     # Check if any HuggingFace models appear to be ColBERT models
     for model_name, model_spec in hf_models.items():
-        model_id = (
-            model_spec if isinstance(model_spec, str) else model_spec.get("model", "")
-        )
-        is_likely_colbert = any(
-            pattern.lower() in model_id.lower() for pattern in known_colbert_patterns
-        )
-        if is_likely_colbert:
+        model_id = get_model_id(model_name, model_spec, "Hugging Face")
+        if model_id and "colbert" in model_id.lower():
             console.print(
                 "\n⚠️  [bold yellow]WARNING: Potential ColBERT model in wrong section![/bold yellow]"
             )
@@ -956,12 +1018,9 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
             )
 
     # Find names that appear in multiple providers
-    all_names = [hf_names, colbert_names, or_names]
-    duplicate_names: set[str] = set()
-    for i, names_i in enumerate(all_names):
-        for j, names_j in enumerate(all_names):
-            if i < j:
-                duplicate_names |= names_i & names_j
+    duplicate_names = (
+        (hf_names & colbert_names) | (hf_names & or_names) | (colbert_names & or_names)
+    )
 
     if duplicate_names:
         console.print(
@@ -971,30 +1030,16 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
 
     # Parse HuggingFace models
     for model_name, model_spec in hf_models.items():
-        # Handle both simple string and dict formats
-        if isinstance(model_spec, str):
-            # Simple format: "model-name: org/model-id"
-            model_id = model_spec
-            use_query_prefix = False
-            use_passage_prefix = False
-            use_query_prompt = False
-            use_passage_prompt = False
-            query_prompt_name = None
-            passage_prompt_name = None
-        else:
-            # Dict format with options
-            model_id = model_spec.get("model")
-            if not model_id:
-                console.print(
-                    f"⚠️  [yellow]Skipping {model_name}: no 'model' field specified[/yellow]"
-                )
-                continue
-            use_query_prefix = model_spec.get("use_query_prefix", False)
-            use_passage_prefix = model_spec.get("use_passage_prefix", False)
-            use_query_prompt = model_spec.get("use_query_prompt", False)
-            use_passage_prompt = model_spec.get("use_passage_prompt", False)
-            query_prompt_name = model_spec.get("query_prompt_name")
-            passage_prompt_name = model_spec.get("passage_prompt_name")
+        model_id = get_model_id(model_name, model_spec, "Hugging Face")
+        if model_id is None:
+            continue
+        options = {} if isinstance(model_spec, str) else model_spec
+        use_query_prefix = options.get("use_query_prefix", False)
+        use_passage_prefix = options.get("use_passage_prefix", False)
+        use_query_prompt = options.get("use_query_prompt", False)
+        use_passage_prompt = options.get("use_passage_prompt", False)
+        query_prompt_name = options.get("query_prompt_name")
+        passage_prompt_name = options.get("passage_prompt_name")
 
         # Build prefixes
         query_prefix = "query: " if use_query_prefix else ""
@@ -1051,18 +1096,9 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
 
     # Parse ColBERT models
     for model_name, model_spec in colbert_models.items():
-        # Handle both simple string and dict formats
-        if isinstance(model_spec, str):
-            # Simple format: "model-name: org/model-id"
-            model_id = model_spec
-        else:
-            # Dict format with options
-            model_id = model_spec.get("model")
-            if not model_id:
-                console.print(
-                    f"⚠️  [yellow]Skipping ColBERT {model_name}: no 'model' field specified[/yellow]"
-                )
-                continue
+        model_id = get_model_id(model_name, model_spec, "ColBERT")
+        if model_id is None:
+            continue
 
         # Disambiguate display name if it appears in multiple providers
         display_name = (
@@ -1086,39 +1122,30 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
         )
 
     # Parse OpenRouter models
-    if openrouter_models:  # Only process if models are defined
-        for model_name, model_spec in openrouter_models.items():
-            # OpenRouter models are always simple strings (provider/model format)
-            if isinstance(model_spec, str):
-                model_id = model_spec
-            else:
-                model_id = model_spec.get("model")
-                if not model_id:
-                    console.print(
-                        f"⚠️  [yellow]Skipping {model_name}: no 'model' field specified[/yellow]"
-                    )
-                    continue
+    for model_name, model_spec in openrouter_models.items():
+        model_id = get_model_id(model_name, model_spec, "OpenRouter")
+        if model_id is None:
+            continue
 
-            # Disambiguate display name if it appears in multiple providers
-            display_name = (
-                f"{model_name}_or" if model_name in duplicate_names else model_name
-            )
+        display_name = (
+            f"{model_name}_or" if model_name in duplicate_names else model_name
+        )
 
-            model_configs.append(
-                {
-                    "model_id": model_id,
-                    "model_name": display_name,
-                    "query_prefix": "",
-                    "passage_prefix": "",
-                    "query_encode_kwargs": {},
-                    "passage_encode_kwargs": {},
-                    "query_cache_identity": {},
-                    "passage_cache_identity": {},
-                    "cache_identity": {},
-                    "is_openrouter": True,
-                    "is_colbert": False,
-                }
-            )
+        model_configs.append(
+            {
+                "model_id": model_id,
+                "model_name": display_name,
+                "query_prefix": "",
+                "passage_prefix": "",
+                "query_encode_kwargs": {},
+                "passage_encode_kwargs": {},
+                "query_cache_identity": {},
+                "passage_cache_identity": {},
+                "cache_identity": {},
+                "is_openrouter": True,
+                "is_colbert": False,
+            }
+        )
 
     # Check for duplicate display names after disambiguation (shouldn't happen, but safety check)
     final_names = [cfg["model_name"] for cfg in model_configs]
@@ -1522,6 +1549,79 @@ def calculate_hit(retrieved_ids: list[str], relevant_ids: list[str]) -> int:
     return 0
 
 
+def select_pareto_quality_metric(
+    results: list[dict[str, Any]], config: dict[str, Any]
+) -> str:
+    """Select the one quality metric used for Pareto comparisons.
+
+    A configured metric takes precedence. Otherwise, the highest-cutoff MRR is
+    used, falling back to the highest-cutoff Hit Rate. Using one metric keeps
+    chart and dashboard classifications identical and interpretable.
+    """
+    available_columns = {key for result in results for key in result}
+    configured_metric = config.get("visualization", {}).get("pareto_quality_metric")
+    if configured_metric is not None:
+        if configured_metric not in available_columns:
+            raise ValueError(
+                "visualization.pareto_quality_metric must name a metric present "
+                f"in the results; got {configured_metric!r}"
+            )
+        return configured_metric
+
+    for prefix in ("mrr@", "hit_rate@"):
+        candidates = [
+            column for column in available_columns if column.startswith(prefix)
+        ]
+        if candidates:
+            return max(candidates, key=lambda column: int(column.split("@")[1]))
+
+    raise ValueError("No MRR or Hit Rate metric is available for Pareto comparison")
+
+
+def calculate_pareto_flags(
+    results: list[dict[str, Any]], quality_metric: str
+) -> list[bool | None]:
+    """Classify embedding configurations by quality and embedding latency.
+
+    Higher quality and lower document-embedding latency are better. BM25 is not
+    classified because its zero embedding time is not comparable to end-to-end
+    search latency. Rows with missing or non-finite inputs are also unclassified.
+    Memory is intentionally excluded because it is unavailable for API models
+    and the current RSS delta is not a comparable peak-memory measurement.
+    """
+    comparable: list[tuple[int, float, float]] = []
+    flags: list[bool | None] = [None] * len(results)
+
+    for index, result in enumerate(results):
+        if result.get("model") == "BM25":
+            continue
+        quality = result.get(quality_metric)
+        latency = result.get("avg_embed_time_ms")
+        if not isinstance(quality, (int, float)) or not isinstance(
+            latency, (int, float)
+        ):
+            continue
+        quality_value = float(quality)
+        latency_value = float(latency)
+        if not math.isfinite(quality_value) or not math.isfinite(latency_value):
+            continue
+        comparable.append((index, quality_value, latency_value))
+
+    for index, quality, latency in comparable:
+        is_optimal = True
+        for other_index, other_quality, other_latency in comparable:
+            if other_index == index:
+                continue
+            at_least_as_good = other_quality >= quality and other_latency <= latency
+            strictly_better = other_quality > quality or other_latency < latency
+            if at_least_as_good and strictly_better:
+                is_optimal = False
+                break
+        flags[index] = is_optimal
+
+    return flags
+
+
 def create_results_visualization(
     results: list[dict[str, Any]],
     output_dir: Path,
@@ -1561,7 +1661,8 @@ def create_results_visualization(
     AXIS_LABEL_SIZE = viz.get("axis_label_size", 9)
     ROW_LABEL_SIZE = viz.get("row_label_size", 9)
     BAR_LABEL_OFFSET = viz.get("bar_label_offset", 0.02)
-    MRR_DYNAMIC_XLIM = viz.get("mrr_dynamic_xlim", True)
+    TITLE_PAD = viz.get("title_pad", 20)
+    METRIC_DYNAMIC_XLIM = viz.get("metric_dynamic_xlim", True)
 
     df = pd.DataFrame(results)
 
@@ -1614,7 +1715,7 @@ def create_results_visualization(
             legend=False,
         )
 
-        plt.title(title, fontsize=TITLE_SIZE, pad=20)
+        plt.title(title, fontsize=TITLE_SIZE, pad=TITLE_PAD)
         plt.ylabel("")
         plt.xlabel(xlabel, fontsize=AXIS_LABEL_SIZE)
 
@@ -1631,7 +1732,7 @@ def create_results_visualization(
 
         # Set x-axis limits
         bar_label_offset = BAR_LABEL_OFFSET
-        if MRR_DYNAMIC_XLIM:
+        if METRIC_DYNAMIC_XLIM:
             min_val = df_sorted[metric_col].min()
             max_val = df_sorted[metric_col].max()
             lower_limit = max(0, min_val - 0.1 * min_val)
@@ -1720,7 +1821,7 @@ def create_results_visualization(
             legend=False,
         )
 
-        plt.title("Embedding Latency", fontsize=TITLE_SIZE, pad=20)
+        plt.title("Embedding Latency", fontsize=TITLE_SIZE, pad=TITLE_PAD)
         plt.ylabel("")
         plt.xlabel("Total Embedding Time (ms)", fontsize=AXIS_LABEL_SIZE)
 
@@ -1765,9 +1866,9 @@ def create_memory_visualization(
 ) -> None:
     """Create and save a bar chart of memory consumption per model.
 
-    Generates a horizontal bar chart showing the memory footprint of each
-    embedding model, including model loading memory and peak memory during
-    embedding generation.
+    Generates a horizontal bar chart showing sampled process RSS deltas during
+    model loading and embedding generation. These are estimates, not true peak
+    CPU or accelerator-memory measurements.
 
     Args:
         memory_data: Dictionary mapping model names to memory stats dicts
@@ -1791,6 +1892,7 @@ def create_memory_visualization(
     viz = config.get("visualization", {})
     FIG_SIZE_X = viz.get("fig_size_x", 16)
     TITLE_SIZE = viz.get("title_size", 24)
+    TITLE_PAD = viz.get("title_pad", 20)
     AXIS_LABEL_SIZE = viz.get("axis_label_size", 9)
     ROW_LABEL_SIZE = viz.get("row_label_size", 9)
     BAR_LABEL_OFFSET = viz.get("bar_label_offset", 0.02)
@@ -1832,10 +1934,10 @@ def create_memory_visualization(
     plt.title(
         "Memory Consumption",
         fontsize=TITLE_SIZE,
-        pad=20,
+        pad=TITLE_PAD,
     )
     plt.ylabel("")
-    plt.xlabel("Peak Memory (MB)", fontsize=AXIS_LABEL_SIZE)
+    plt.xlabel("Sampled Process RSS Delta (MB)", fontsize=AXIS_LABEL_SIZE)
 
     # Add value labels at the end of bars
     max_memory = df_memory["peak_memory_mb"].max()
@@ -1879,14 +1981,14 @@ def create_tradeoff_visualization(
     """Create bubble chart showing quality vs latency vs memory tradeoffs.
 
     Generates a scatter plot where:
-    - X-axis: Embedding latency (ms per document)
-    - Y-axis: Retrieval quality (best MRR@k or configurable metric)
-    - Bubble size: Memory consumption (squares for BM25 baseline)
+    - X-axis: Document-embedding latency (ms per document)
+    - Y-axis: One configured retrieval-quality metric
+    - Bubble size: Sampled process RSS delta, when available
     - Color: Model name (consistent with other charts)
     - Pareto frontier: Highlighted optimal models
 
     Each model+alpha configuration is shown as a separate point.
-    BM25 baseline is shown as a square at x=0 (no embedding latency).
+    BM25 is excluded because zero embedding time is not end-to-end latency.
 
     Args:
         results: List of evaluation result dictionaries
@@ -1911,61 +2013,44 @@ def create_tradeoff_visualization(
     viz = config.get("visualization", {})
     FIG_SIZE_X = viz.get("fig_size_x", 16)
     TITLE_SIZE = viz.get("title_size", 24)
+    TITLE_PAD = viz.get("title_pad", 20)
     AXIS_LABEL_SIZE = viz.get("axis_label_size", 9)
     ROW_LABEL_SIZE = viz.get("row_label_size", 9)
 
     df_full = pd.DataFrame(results)
+    try:
+        quality_metric = select_pareto_quality_metric(results, config)
+    except ValueError as error:
+        console.print(f"\n   ⚠️  [yellow]{error}; skipping tradeoff chart[/yellow]")
+        return
+    df_full["is_pareto"] = calculate_pareto_flags(results, quality_metric)
+    df_full["memory_mb"] = df_full["model_short"].map(
+        lambda model: memory_data.get(model, {}).get("peak_memory_mb")
+    )
 
     # Create color palette from FULL results (same as other charts) for consistency
     unique_models_all = df_full["model_short"].unique()
     colors = sns.color_palette("tab10", n_colors=len(unique_models_all))
     model_colors = {model: colors[i] for i, model in enumerate(unique_models_all)}
 
-    # Separate BM25 baseline and embedding models
-    df_bm25 = df_full[df_full["model"] == "BM25"].copy()
-    df = df_full[df_full["model"] != "BM25"].copy()
-
-    # Find the best quality metric column (prefer highest k MRR)
-    metric_cols = [col for col in df_full.columns if col.startswith("mrr@")]
-    if not metric_cols:
-        metric_cols = [col for col in df_full.columns if col.startswith("hit_rate@")]
-    if not metric_cols:
+    # Pareto comparison requires a comparable embedding-latency measurement.
+    df_plot = df_full[
+        (df_full["model"] != "BM25") & df_full["is_pareto"].notna()
+    ].copy()
+    if df_plot.empty:
         console.print(
-            "\n   ⚠️  [yellow]No quality metrics found for tradeoff visualization[/yellow]",
+            "\n   ⚠️  [yellow]No embedding models with comparable quality and latency data[/yellow]",
             style="dim",
         )
         return
 
-    # Use the metric with highest k value
-    quality_metric = sorted(metric_cols, key=lambda x: int(x.split("@")[1]))[-1]
-
-    # Check if we have any embedding models with memory data
-    if df.empty and df_bm25.empty:
-        console.print(
-            "\n   ⚠️  [yellow]No models to visualize[/yellow]",
-            style="dim",
-        )
-        return
-
-    # Include ALL alpha configurations (not just best per model)
-    df_plot = df.copy()
-
-    # Add memory data for embedding models
-    if not df_plot.empty:
-        df_plot["memory_mb"] = df_plot["model_short"].map(
-            lambda m: memory_data.get(m, {}).get("peak_memory_mb", 0.0)
-        )
-        # Separate models with and without memory data
-        df_with_memory = df_plot[df_plot["memory_mb"] > 0].copy()
-        df_no_memory = df_plot[df_plot["memory_mb"] == 0].copy()  # OpenRouter models
-    else:
-        df_with_memory = pd.DataFrame()
-        df_no_memory = pd.DataFrame()
+    df_with_memory = df_plot[df_plot["memory_mb"].notna()].copy()
+    df_no_memory = df_plot[df_plot["memory_mb"].isna()].copy()
 
     # Create figure with extra space for legend on the right
-    fig, ax = plt.subplots(figsize=(FIG_SIZE_X + 4, 10))
+    _, ax = plt.subplots(figsize=(FIG_SIZE_X + 4, 10))
 
-    # Track all points for Pareto calculation (including BM25 and OpenRouter)
+    # Collect points using the shared Pareto classification.
     all_points = []
 
     # Process embedding models WITH memory data (will be bubbles)
@@ -1997,7 +2082,8 @@ def create_tradeoff_visualization(
                     "model_short": row["model_short"],
                     "alpha": row["alpha"],
                     "is_bm25": False,
-                    "is_api": False,  # Has memory data, not an API model
+                    "is_api": False,
+                    "is_pareto": bool(row["is_pareto"]),
                     "size": bubble_sizes.loc[idx],
                 }
             )
@@ -2005,35 +2091,20 @@ def create_tradeoff_visualization(
         min_memory = 0
         max_memory = 0
 
-    # Process OpenRouter/API models WITHOUT memory data (will be colored squares)
+    # Models without comparable memory data are shown as fixed-size squares.
     for _, row in df_no_memory.iterrows():
         all_points.append(
             {
                 "idx": None,
                 "quality": row[quality_metric],
                 "latency": row["avg_embed_time_ms"],
-                "memory": 0.0,  # API models have no local memory footprint
+                "memory": None,
                 "model_short": row["model_short"],
                 "alpha": row["alpha"],
                 "is_bm25": False,
-                "is_api": True,  # OpenRouter/API model
-                "size": 300,  # Fixed size for API model squares
-            }
-        )
-
-    # Add BM25 points (latency=0, memory=0)
-    for _, row in df_bm25.iterrows():
-        all_points.append(
-            {
-                "idx": None,
-                "quality": row[quality_metric],
-                "latency": 0.0,  # BM25 has no embedding latency
-                "memory": 0.0,  # BM25 has no memory footprint
-                "model_short": row["model_short"],
-                "alpha": row["alpha"],
-                "is_bm25": True,
-                "is_api": False,
-                "size": 300,  # Fixed size for BM25 squares
+                "is_api": True,
+                "is_pareto": bool(row["is_pareto"]),
+                "size": 300,
             }
         )
 
@@ -2044,49 +2115,7 @@ def create_tradeoff_visualization(
         )
         return
 
-    # Calculate Pareto frontier (configurations not dominated by any other)
-    # For Pareto: higher quality is better, lower latency is better, lower memory is better
-    def is_pareto_optimal(point: dict, all_pts: list[dict]) -> bool:
-        """Check if a point is Pareto optimal."""
-        for other in all_pts:
-            if other is point:
-                continue
-            # Check if 'other' dominates 'point'
-            # Dominates means: at least as good in all dimensions, strictly better in at least one
-            at_least_as_good = (
-                other["quality"] >= point["quality"]
-                and other["latency"] <= point["latency"]
-                and other["memory"] <= point["memory"]
-            )
-            strictly_better = (
-                other["quality"] > point["quality"]
-                or other["latency"] < point["latency"]
-                or other["memory"] < point["memory"]
-            )
-            if at_least_as_good and strictly_better:
-                return False
-        return True
-
-    for point in all_points:
-        point["is_pareto"] = is_pareto_optimal(point, all_points)
-
-    # Plot BM25 baseline as squares (matching style from other charts)
-    bm25_points = [p for p in all_points if p["is_bm25"]]
-    for point in bm25_points:
-        ax.scatter(
-            point["latency"],
-            point["quality"],
-            s=point["size"],
-            c="#D3D3D3",  # Light gray matching other charts
-            marker="s",  # Square marker for BM25
-            alpha=1.0,
-            edgecolors="#444444",  # Grey outline matching other charts
-            linewidths=1.0,
-            zorder=3,
-            hatch="//",  # Hatched pattern matching other charts
-        )
-
-    # Plot OpenRouter/API model points as colored squares (no memory data)
+    # Plot models without memory measurements as colored squares.
     api_points = [p for p in all_points if p.get("is_api", False)]
     for point in api_points:
         ax.scatter(
@@ -2134,15 +2163,9 @@ def create_tradeoff_visualization(
 
     # Add labels for all points (below the markers)
     for point in all_points:
-        if point["is_bm25"]:
-            label = f"{point['model_short']}"
-        else:
-            label = f"{point['model_short']}\n(α={point['alpha']:.1f})"
+        label = f"{point['model_short']}\n(α={point['alpha']:.1f})"
         if point["is_pareto"]:
-            if point["is_bm25"]:
-                label = f"★ {point['model_short']}"
-            else:
-                label = f"★ {point['model_short']}\n(α={point['alpha']:.1f})"
+            label = f"★ {point['model_short']}\n(α={point['alpha']:.1f})"
 
         # Calculate offset based on marker size (labels go below)
         y_offset = -12 - (point["size"] / 300)  # Negative for below, closer to bubble
@@ -2194,22 +2217,20 @@ def create_tradeoff_visualization(
     # Build legend elements
     legend_elements = []
 
-    # Determine which models are API models (no memory) vs local models (have memory)
+    # Determine which models have no comparable memory measurement.
     api_model_names = {p["model_short"] for p in all_points if p.get("is_api", False)}
 
     # Add model color legend (only models present in the plot)
     unique_models_in_plot = list(dict.fromkeys([p["model_short"] for p in all_points]))
     for model in unique_models_in_plot:
-        # Use square for BM25 and API models, circle for local models with memory
-        is_bm25_model = model == "Baseline_BM25"
         is_api_model = model in api_model_names
         legend_elements.append(
             plt.scatter(
                 [],
                 [],
                 s=150,
-                c="#D3D3D3" if is_bm25_model else [model_colors[model]],
-                marker="s" if (is_bm25_model or is_api_model) else "o",
+                c=[model_colors[model]],
+                marker="s" if is_api_model else "o",
                 alpha=0.8,
                 label=model,
             )
@@ -2247,24 +2268,7 @@ def create_tradeoff_visualization(
             plt.scatter([], [], s=0, c="white", label=" ")  # Empty spacer
         )
 
-    # Add BM25 indicator to legend
-    if bm25_points:
-        legend_elements.append(
-            plt.scatter(
-                [],
-                [],
-                s=200,
-                c="#D3D3D3",  # Light gray matching other charts
-                marker="s",
-                alpha=1.0,
-                edgecolors="#444444",
-                linewidths=1.0,
-                hatch="//",
-                label="■ BM25 (no memory)",
-            )
-        )
-
-    # Add API model indicator to legend (if any API models present)
+    # Add missing-memory indicator to the legend.
     if api_points:
         legend_elements.append(
             plt.scatter(
@@ -2276,7 +2280,7 @@ def create_tradeoff_visualization(
                 alpha=0.6,
                 edgecolors="gray",
                 linewidths=1.0,
-                label="■ API (no memory)",
+                label="■ Memory not measured",
             )
         )
 
@@ -2296,7 +2300,7 @@ def create_tradeoff_visualization(
     # Place legend outside the plot on the right
     ax.legend(
         handles=legend_elements,
-        title="Models & Memory",
+        title="Models & sampled RSS delta",
         loc="center left",
         bbox_to_anchor=(1.02, 0.5),
         framealpha=0.9,
@@ -2308,12 +2312,15 @@ def create_tradeoff_visualization(
 
     # Labels and title
     metric_label = quality_metric.upper().replace("@", " @")
-    ax.set_xlabel("Embedding Latency (ms per document)", fontsize=AXIS_LABEL_SIZE + 2)
+    ax.set_xlabel(
+        "Document Embedding Latency (ms per document)",
+        fontsize=AXIS_LABEL_SIZE + 2,
+    )
     ax.set_ylabel(metric_label, fontsize=AXIS_LABEL_SIZE + 2)
     ax.set_title(
-        "Model Tradeoffs: Quality vs Latency vs Memory",
+        "Model Tradeoffs: Quality vs Document Embedding Latency",
         fontsize=TITLE_SIZE,
-        pad=20,
+        pad=TITLE_PAD,
     )
 
     # Add document and query counts below the graph (left-aligned)
@@ -2377,60 +2384,12 @@ def create_html_dashboard(
     # Find all metric columns
     metric_cols = [col for col in df.columns if "@" in col]
 
-    # Calculate Pareto optimality for each row
-    # For Pareto: higher quality metrics are better, lower latency is better
-    def is_pareto_optimal(
-        row_idx: int, df: pd.DataFrame, metric_cols: list[str]
-    ) -> bool:
-        """Check if a row is Pareto optimal."""
-        row = df.iloc[row_idx]
-        for other_idx in range(len(df)):
-            if other_idx == row_idx:
-                continue
-            other = df.iloc[other_idx]
-
-            # Check if 'other' dominates 'row'
-            # For metrics: higher is better (skip NaN comparisons)
-            # For latency: lower is better
-            def safe_ge(a: float, b: float) -> bool:
-                """Safe greater-than-or-equal comparison handling NaN."""
-                if pd.isna(a) or pd.isna(b):
-                    return False
-                return a >= b
-
-            def safe_gt(a: float, b: float) -> bool:
-                """Safe greater-than comparison handling NaN."""
-                if pd.isna(a) or pd.isna(b):
-                    return False
-                return a > b
-
-            metrics_at_least_as_good = all(
-                safe_ge(other[m], row[m]) for m in metric_cols
-            )
-            latency_at_least_as_good = (
-                other["avg_embed_time_ms"] <= row["avg_embed_time_ms"]
-            )
-
-            metrics_strictly_better = any(
-                safe_gt(other[m], row[m]) for m in metric_cols
-            )
-            latency_strictly_better = (
-                other["avg_embed_time_ms"] < row["avg_embed_time_ms"]
-            )
-
-            if metrics_at_least_as_good and latency_at_least_as_good:
-                if metrics_strictly_better or latency_strictly_better:
-                    return False
-        return True
-
-    pareto_indices = set()
-    for idx in range(len(df)):
-        if is_pareto_optimal(idx, df, metric_cols):
-            pareto_indices.add(idx)
+    quality_metric = select_pareto_quality_metric(results, config)
+    pareto_flags = calculate_pareto_flags(results, quality_metric)
 
     # Add memory data to dataframe
     df["memory_mb"] = df["model_short"].map(
-        lambda m: memory_data.get(m, {}).get("peak_memory_mb", 0.0)
+        lambda model: memory_data.get(model, {}).get("peak_memory_mb")
     )
 
     # Prepare data for JSON embedding
@@ -2440,12 +2399,15 @@ def create_html_dashboard(
             "model": row["model"],
             "model_short": row["model_short"],
             "alpha": row["alpha"],
-            "avg_embed_time_ms": row["avg_embed_time_ms"],
+            "avg_embed_time_ms": None
+            if row["model"] == "BM25"
+            else row["avg_embed_time_ms"],
             "total_embed_time_ms": row["total_embed_time_ms"],
             "num_queries": row["num_queries"],
             "num_documents": row["num_documents"],
-            "memory_mb": row["memory_mb"],
-            "is_pareto": idx in pareto_indices,
+            "memory_mb": None if pd.isna(row["memory_mb"]) else row["memory_mb"],
+            "is_pareto": pareto_flags[idx],
+            "pareto_quality_metric": quality_metric,
         }
         # Add all metric columns (handle NaN values from missing columns)
         for col in metric_cols:

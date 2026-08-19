@@ -1,28 +1,29 @@
 import argparse
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import cast
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 from dotenv import load_dotenv
 from openai import OpenAI
 from rich.console import Console
+from rich.panel import Panel
 from rich.progress import (
+    BarColumn,
     Progress,
     SpinnerColumn,
-    TextColumn,
-    BarColumn,
     TaskProgressColumn,
+    TextColumn,
 )
-from rich.panel import Panel
-import time
 
-from _core.utils_prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 from _core.utils import (
     load_config,
-    truncate_text_to_tokens,
     load_mteb_retrieval_data_from_dir,
+    truncate_text_to_tokens,
 )
+from _core.utils_prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 
 console = Console()
 
@@ -32,7 +33,7 @@ DEFAULT_USER_DATA_DIR = Path("_data/mteb_user")
 
 def load_documents_from_file(file_path: Path) -> pd.DataFrame:
     """
-    Load documents from various file formats (Excel, CSV, Parquet).
+    Load documents from CSV or Parquet.
 
     Args:
         file_path: Path to the input file
@@ -49,12 +50,10 @@ def load_documents_from_file(file_path: Path) -> pd.DataFrame:
         df = pd.read_csv(file_path)
     elif extension in [".parquet", ".pq"]:
         df = pd.read_parquet(file_path)
-    elif extension in [".xlsx", ".xls"]:
-        df = pd.read_excel(file_path)
     else:
         raise ValueError(
             f"Unsupported file format: {extension}. "
-            "Supported formats: .csv, .parquet, .pq, .xlsx, .xls"
+            "Supported formats: .csv, .parquet, .pq"
         )
 
     # Validate required columns
@@ -186,7 +185,6 @@ def process_document_worker(
     max_document_tokens: int,
     temperature: float,
     max_output_tokens: int,
-    provider: str = "openrouter",
     base_url: str = "https://openrouter.ai/api/v1",
 ) -> tuple[int, str, list[str]]:
     """
@@ -203,7 +201,6 @@ def process_document_worker(
         max_document_tokens: Maximum number of tokens to send to LLM
         temperature: Temperature for LLM generation (higher = more diverse)
         max_output_tokens: Maximum number of tokens in LLM response
-        provider: "openrouter" or "ollama"
         base_url: Base URL for the API
 
     Returns:
@@ -239,7 +236,6 @@ def generate_all_queries(
     max_document_tokens: int,
     temperature: float,
     max_output_tokens: int,
-    provider: str = "openrouter",
     base_url: str = "https://openrouter.ai/api/v1",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -255,7 +251,6 @@ def generate_all_queries(
         max_document_tokens: Maximum number of tokens to send to LLM
         temperature: Temperature for LLM generation (higher = more diverse)
         max_output_tokens: Maximum number of tokens in LLM response
-        provider: "openrouter" or "ollama"
         base_url: Base URL for the API
 
     Returns:
@@ -292,7 +287,6 @@ def generate_all_queries(
                     max_document_tokens,
                     temperature,
                     max_output_tokens,
-                    provider,
                     base_url,
                 ): cast(int, idx)
                 for idx, row in documents_df.iterrows()
@@ -301,7 +295,7 @@ def generate_all_queries(
             # Process completed futures as they finish
             for future in as_completed(futures):
                 try:
-                    idx, doc_id, queries = future.result()
+                    _, doc_id, queries = future.result()
 
                     # Add queries with document ID
                     for query in queries:
@@ -345,13 +339,13 @@ def generate_all_queries(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate search queries from documents using LLM. "
+        description="Generate search queries from documents using an LLM. "
         "Creates an MTEB-format dataset from your documents."
     )
     parser.add_argument(
         "input_file",
         type=Path,
-        help="Input file with documents (Excel, CSV, or Parquet). "
+        help="Input file with documents (CSV or Parquet). "
         "Must have 'text' column, 'id' column is optional.",
     )
     parser.add_argument(
@@ -477,7 +471,7 @@ def main() -> int:
             console.print(f"❌ [red]Error loading MTEB corpus: {e}[/red]")
             return 1
     else:
-        # Load from user file (Excel, CSV, Parquet)
+        # Load from user file (CSV or Parquet)
         if not args.input_file.exists():
             console.print(
                 f"❌ [red]Error: Input file not found: {args.input_file}[/red]"
@@ -523,7 +517,6 @@ def main() -> int:
             max_document_tokens=max_document_tokens,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
-            provider=args.provider,
             base_url=base_url,
         )
     except Exception as e:

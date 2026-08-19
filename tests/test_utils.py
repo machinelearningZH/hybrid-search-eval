@@ -11,8 +11,11 @@ import torch
 from _core.utils import (
     MTEBRetrievalData,
     calculate_hit,
+    calculate_pareto_flags,
     calculate_reciprocal_rank,
     colbert_embeddings_exist,
+    create_html_dashboard,
+    create_tradeoff_visualization,
     embeddings_exist,
     eval_results_exist,
     generate_cache_key,
@@ -26,6 +29,7 @@ from _core.utils import (
     save_colbert_embeddings,
     save_embeddings,
     save_eval_results,
+    select_pareto_quality_metric,
     validate_config,
 )
 
@@ -91,6 +95,30 @@ def test_validate_config_accepts_complete_config(
     valid_config: dict[str, Any],
 ) -> None:
     assert validate_config(valid_config) == []
+
+
+def test_validate_config_rejects_obsolete_visualization_keys(
+    valid_config: dict[str, Any],
+) -> None:
+    config = deepcopy(valid_config)
+    config["visualization"] = {"recall_dynamic_xlim": True}
+
+    errors = validate_config(config)
+
+    assert len(errors) == 1
+    assert "metric_dynamic_xlim" in errors[0]
+
+
+def test_validate_config_rejects_unavailable_pareto_metric(
+    valid_config: dict[str, Any],
+) -> None:
+    config = deepcopy(valid_config)
+    config["visualization"] = {"pareto_quality_metric": "mrr@100"}
+
+    errors = validate_config(config)
+
+    assert len(errors) == 1
+    assert "configured search metric" in errors[0]
 
 
 def test_embedding_cache_key_is_stable_and_input_sensitive() -> None:
@@ -298,6 +326,177 @@ def test_calculate_hit(
     retrieved: list[str], relevant: list[str], expected: int
 ) -> None:
     assert calculate_hit(retrieved, relevant) == expected
+
+
+def test_select_pareto_quality_metric_honors_config_and_uses_numeric_cutoffs() -> None:
+    results = [
+        {"mrr@3": 0.5, "mrr@10": 0.6, "hit_rate@100": 0.8},
+    ]
+
+    assert select_pareto_quality_metric(results, {}) == "mrr@10"
+    assert (
+        select_pareto_quality_metric(
+            results, {"visualization": {"pareto_quality_metric": "hit_rate@100"}}
+        )
+        == "hit_rate@100"
+    )
+
+    with pytest.raises(ValueError, match="pareto_quality_metric"):
+        select_pareto_quality_metric(
+            results, {"visualization": {"pareto_quality_metric": "ndcg@10"}}
+        )
+
+
+def test_calculate_pareto_flags_uses_quality_and_embedding_latency() -> None:
+    results = [
+        {
+            "model": "fast",
+            "model_short": "fast",
+            "mrr@10": 0.70,
+            "avg_embed_time_ms": 2.0,
+        },
+        {
+            "model": "slow-dominated",
+            "model_short": "slow-dominated",
+            "mrr@10": 0.60,
+            "avg_embed_time_ms": 4.0,
+        },
+        {
+            "model": "accurate",
+            "model_short": "accurate",
+            "mrr@10": 0.85,
+            "avg_embed_time_ms": 6.0,
+        },
+        {
+            "model": "BM25",
+            "model_short": "Baseline_BM25",
+            "mrr@10": 0.65,
+            "avg_embed_time_ms": 0.0,
+        },
+        {
+            "model": "missing",
+            "model_short": "missing",
+            "mrr@10": None,
+            "avg_embed_time_ms": 3.0,
+        },
+    ]
+
+    assert calculate_pareto_flags(results, "mrr@10") == [
+        True,
+        False,
+        True,
+        None,
+        None,
+    ]
+
+
+def test_calculate_pareto_flags_keeps_tied_configurations() -> None:
+    results = [
+        {"model": "a", "mrr@10": 0.7, "avg_embed_time_ms": 2.0},
+        {"model": "b", "mrr@10": 0.7, "avg_embed_time_ms": 2.0},
+    ]
+
+    assert calculate_pareto_flags(results, "mrr@10") == [True, True]
+
+
+def test_dashboard_uses_shared_pareto_flags_and_preserves_unknown_costs(
+    tmp_path: Path,
+) -> None:
+    results = [
+        {
+            "model": "fast",
+            "model_short": "fast",
+            "alpha": 1.0,
+            "mrr@10": 0.8,
+            "avg_embed_time_ms": 2.0,
+            "total_embed_time_ms": 20.0,
+            "num_queries": 2,
+            "num_documents": 10,
+        },
+        {
+            "model": "slow",
+            "model_short": "slow",
+            "alpha": 1.0,
+            "mrr@10": 0.7,
+            "avg_embed_time_ms": 4.0,
+            "total_embed_time_ms": 40.0,
+            "num_queries": 2,
+            "num_documents": 10,
+        },
+        {
+            "model": "BM25",
+            "model_short": "Baseline_BM25",
+            "alpha": 0.0,
+            "mrr@10": 0.6,
+            "avg_embed_time_ms": 0.0,
+            "total_embed_time_ms": 0.0,
+            "num_queries": 2,
+            "num_documents": 10,
+        },
+    ]
+
+    create_html_dashboard(
+        results,
+        memory_data={},
+        output_dir=tmp_path,
+        timestamp="20260101_120000",
+        config={"project_id": "test", "visualization": {}},
+    )
+
+    dashboard = (tmp_path / "dashboard_20260101_120000.html").read_text()
+    assert dashboard.count('"is_pareto": true') == 1
+    assert dashboard.count('"is_pareto": false') == 1
+    assert dashboard.count('"is_pareto": null') == 1
+    assert dashboard.count('"memory_mb": null') == 3
+    assert '"model": "BM25"' in dashboard
+    assert '"avg_embed_time_ms": null' in dashboard
+
+
+def test_tradeoff_chart_supports_missing_memory_and_excludes_bm25_cost(
+    tmp_path: Path,
+) -> None:
+    results = [
+        {
+            "model": "local",
+            "model_short": "local",
+            "alpha": 1.0,
+            "mrr@10": 0.8,
+            "avg_embed_time_ms": 2.0,
+            "total_embed_time_ms": 20.0,
+            "num_queries": 2,
+            "num_documents": 10,
+        },
+        {
+            "model": "api",
+            "model_short": "api",
+            "alpha": 0.5,
+            "mrr@10": 0.75,
+            "avg_embed_time_ms": 3.0,
+            "total_embed_time_ms": 30.0,
+            "num_queries": 2,
+            "num_documents": 10,
+        },
+        {
+            "model": "BM25",
+            "model_short": "Baseline_BM25",
+            "alpha": 0.0,
+            "mrr@10": 0.7,
+            "avg_embed_time_ms": 0.0,
+            "total_embed_time_ms": 0.0,
+            "num_queries": 2,
+            "num_documents": 10,
+        },
+    ]
+
+    create_tradeoff_visualization(
+        results,
+        memory_data={"local": {"peak_memory_mb": 100.0}},
+        output_dir=tmp_path,
+        timestamp="20260101_120000",
+        config={"visualization": {"pareto_quality_metric": "mrr@10"}},
+    )
+
+    assert (tmp_path / "tradeoff_20260101_120000.png").is_file()
 
 
 class _FakeEmbeddings(torch.nn.Module):

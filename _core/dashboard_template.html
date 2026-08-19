@@ -44,7 +44,7 @@
             <div class="flex flex-wrap gap-6 text-sm">
                 <div class="flex items-center gap-2">
                     <span class="pareto-star text-xl">★</span>
-                    <span class="text-gray-700">Pareto Optimal (best tradeoff between quality and speed)</span>
+                    <span class="text-gray-700">Pareto optimal for the configured quality metric and document-embedding latency</span>
                 </div>
                 <div class="flex items-center gap-2">
                     <div class="w-4 h-3 bar-fill rounded"></div>
@@ -91,17 +91,17 @@
                             </th>
                             {metric_headers_html}
                             <th class="px-4 py-3 text-left font-semibold text-gray-700 has-tooltip relative" data-sort="avg_embed_time_ms">
-                                Latency (ms/doc)
+                                Document embedding (ms/doc)
                                 <span class="sort-arrow"></span>
                                 <span class="tooltip absolute bg-gray-800 text-white text-xs rounded px-2 py-1 -top-8 left-0 whitespace-nowrap z-10">
-                                    Average embedding time per document
+                                    Average document-embedding time; excludes indexing and search
                                 </span>
                             </th>
                             <th class="px-4 py-3 text-left font-semibold text-gray-700 has-tooltip relative" data-sort="memory_mb">
-                                Memory (MB)
+                                RSS delta (MB)
                                 <span class="sort-arrow"></span>
                                 <span class="tooltip absolute bg-gray-800 text-white text-xs rounded px-2 py-1 -top-8 left-0 whitespace-nowrap z-10">
-                                    Peak memory usage
+                                    Sampled process RSS delta; unavailable measurements are shown as “-”
                                 </span>
                             </th>
                         </tr>

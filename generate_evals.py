@@ -1,66 +1,77 @@
-from pathlib import Path
-from datetime import datetime
-from typing import cast
-import time
-import csv
 import argparse
+import atexit
+import csv
+import gc
+import os
 import signal
 import sys
-import torch
-import gc
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, cast
+
+import matplotlib.pyplot as plt
 import psutil
-import os
-import atexit
+import torch
 import weaviate
-from weaviate.exceptions import WeaviateStartUpError
-from weaviate.classes.config import Property, DataType
-from sentence_transformers import SentenceTransformer
 from pylate import models as pylate_models
 from pylate import rank as pylate_rank
-import matplotlib.pyplot as plt
 from rich.console import Console
 from rich.panel import Panel
+from sentence_transformers import SentenceTransformer
+from weaviate.classes.config import DataType, Property
+from weaviate.exceptions import WeaviateStartUpError
 
 from _core.utils import (
-    load_config,
-    validate_config,
-    load_mteb_retrieval_data_from_dir,
-    generate_cache_key,
-    save_embeddings,
-    load_embeddings,
-    embeddings_exist,
-    save_colbert_embeddings,
-    load_colbert_embeddings,
-    colbert_embeddings_exist,
-    generate_eval_cache_key,
-    save_eval_results,
-    load_eval_results,
-    eval_results_exist,
-    calculate_reciprocal_rank,
     calculate_hit,
-    create_results_visualization,
-    create_memory_visualization,
-    create_tradeoff_visualization,
+    calculate_reciprocal_rank,
+    colbert_embeddings_exist,
     create_html_dashboard,
-    truncate_text_to_tokens,
+    create_memory_visualization,
+    create_results_visualization,
+    create_tradeoff_visualization,
+    embeddings_exist,
+    eval_results_exist,
+    generate_cache_key,
+    generate_eval_cache_key,
     get_openrouter_embeddings,
+    load_colbert_embeddings,
+    load_config,
+    load_embeddings,
+    load_eval_results,
+    load_mteb_retrieval_data_from_dir,
     parse_model_configs,
-    repair_snowflake_position_ids,
-    print_loading_cached,
-    print_loaded_cached,
-    print_generating,
     print_generated,
     print_generated_count,
-    print_saved_to_cache,
-    print_saved_eval_to_cache,
-    print_indexing,
+    print_generating,
     print_indexed,
+    print_indexing,
+    print_loaded_cached,
+    print_loading_cached,
+    print_saved_eval_to_cache,
+    print_saved_to_cache,
+    repair_snowflake_position_ids,
+    save_colbert_embeddings,
+    save_embeddings,
+    save_eval_results,
+    truncate_text_to_tokens,
+    validate_config,
 )
 
 console = Console()
 
 # Global reference for cleanup
 _weaviate_client: weaviate.WeaviateClient | None = None
+
+
+@dataclass(frozen=True)
+class PendingEmbeddingCache:
+    """Embedding payload held until a model evaluation succeeds."""
+
+    embeddings: Any
+    cache_key: str
+    metadata: dict[str, Any]
 
 
 def cleanup_weaviate() -> None:
@@ -763,7 +774,7 @@ def main() -> None:
                             f"   [cyan]rm -rf ~/.cache/huggingface/modules/transformers_modules/{model_id.replace('/', '/')}*[/cyan]"
                         )
                         console.print(
-                            "   [cyan]rm -rf ~/.cache/huggingface/hub/models--{model_id.replace('/', '--')}*[/cyan]"
+                            f"   [cyan]rm -rf ~/.cache/huggingface/hub/models--{model_id.replace('/', '--')}*[/cyan]"
                         )
                         console.print("\n   Then run the script again.\n")
                         raise
@@ -979,11 +990,10 @@ def main() -> None:
                     "is_colbert": is_colbert,
                 }
                 # Track pending document embeddings to save after successful completion
-                pending_doc_embeddings = (
-                    document_embeddings,
-                    doc_cache_key,
-                    doc_metadata,
-                    is_colbert,
+                pending_doc_embeddings = PendingEmbeddingCache(
+                    embeddings=document_embeddings,
+                    cache_key=doc_cache_key,
+                    metadata=doc_metadata,
                 )
 
             # ColBERT models use direct MaxSim scoring, skip Weaviate indexing
@@ -1041,11 +1051,10 @@ def main() -> None:
                         "is_colbert": True,
                     }
                     # Track pending query embeddings to save after successful completion
-                    pending_query_embeddings = (
-                        query_embeddings,
-                        query_cache_key,
-                        query_metadata,
-                        True,
+                    pending_query_embeddings = PendingEmbeddingCache(
+                        embeddings=query_embeddings,
+                        cache_key=query_cache_key,
+                        metadata=query_metadata,
                     )
 
                 # Create Weaviate collection for BM25 scoring (text only, no vectors)
@@ -1251,16 +1260,20 @@ def main() -> None:
 
                 # All ColBERT processing succeeded - now save pending embeddings to cache
                 if pending_doc_embeddings is not None:
-                    emb, cache_key, metadata, is_cb = pending_doc_embeddings
                     saved_path = save_colbert_embeddings(
-                        emb, cache_key, embeddings_dir, metadata
+                        pending_doc_embeddings.embeddings,
+                        pending_doc_embeddings.cache_key,
+                        embeddings_dir,
+                        pending_doc_embeddings.metadata,
                     )
                     print_saved_to_cache(saved_path)
 
                 if pending_query_embeddings is not None:
-                    emb, cache_key, metadata, is_cb = pending_query_embeddings
                     saved_path = save_colbert_embeddings(
-                        emb, cache_key, embeddings_dir, metadata
+                        pending_query_embeddings.embeddings,
+                        pending_query_embeddings.cache_key,
+                        embeddings_dir,
+                        pending_query_embeddings.metadata,
                     )
                     print_saved_to_cache(saved_path)
 
@@ -1380,11 +1393,10 @@ def main() -> None:
                     else batch_size,
                 }
                 # Track pending query embeddings to save after successful completion
-                pending_query_embeddings = (
-                    query_embeddings,
-                    query_cache_key,
-                    query_metadata,
-                    False,
+                pending_query_embeddings = PendingEmbeddingCache(
+                    embeddings=query_embeddings,
+                    cache_key=query_cache_key,
+                    metadata=query_metadata,
                 )
 
             # Get per-metric K values and determine max K for retrieval
@@ -1471,13 +1483,21 @@ def main() -> None:
 
             # All model processing succeeded - now save pending embeddings to cache
             if pending_doc_embeddings is not None:
-                emb, cache_key, metadata, is_colbert_emb = pending_doc_embeddings
-                saved_path = save_embeddings(emb, cache_key, embeddings_dir, metadata)
+                saved_path = save_embeddings(
+                    pending_doc_embeddings.embeddings,
+                    pending_doc_embeddings.cache_key,
+                    embeddings_dir,
+                    pending_doc_embeddings.metadata,
+                )
                 print_saved_to_cache(saved_path)
 
             if pending_query_embeddings is not None:
-                emb, cache_key, metadata, is_colbert_emb = pending_query_embeddings
-                saved_path = save_embeddings(emb, cache_key, embeddings_dir, metadata)
+                saved_path = save_embeddings(
+                    pending_query_embeddings.embeddings,
+                    pending_query_embeddings.cache_key,
+                    embeddings_dir,
+                    pending_query_embeddings.metadata,
+                )
                 print_saved_to_cache(saved_path)
 
             # Cleanup model if it was loaded
@@ -1501,7 +1521,7 @@ def main() -> None:
                 all_fieldnames: list[str] = []
                 seen_keys: set[str] = set()
                 for result in all_results:
-                    for key in result.keys():
+                    for key in result:
                         if key not in seen_keys:
                             all_fieldnames.append(key)
                             seen_keys.add(key)
@@ -1518,8 +1538,8 @@ def main() -> None:
         if memory_data:
             create_memory_visualization(memory_data, output_dir, timestamp, config)
 
-        # Create tradeoff visualization (quality vs latency vs memory)
-        if memory_data and all_results:
+        # Create tradeoff visualization; memory is optional metadata.
+        if all_results:
             create_tradeoff_visualization(
                 all_results, memory_data, output_dir, timestamp, config
             )
