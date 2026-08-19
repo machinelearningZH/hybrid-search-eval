@@ -191,8 +191,11 @@ Want to benchmark against established datasets? Download retrieval datasets from
 # Download full dataset
 uv run download_mteb_datasets.py mteb/scifact
 
-# Download only 100 documents (with matching queries/qrels)
-uv run download_mteb_datasets.py mteb/scifact --sample 100
+# Reproducible query-led sample targeting 100 documents
+uv run download_mteb_datasets.py mteb/scifact --sample 100 --seed 42
+
+# Select an evaluation split when qrels provides more than one
+uv run download_mteb_datasets.py mteb/scifact --split test
 
 # Custom output directory
 uv run download_mteb_datasets.py mteb/nfcorpus --output-dir ./_data/custom
@@ -211,8 +214,16 @@ Note: **Documents are truncated to `max_document_tokens` for embedding**, which 
 
 - `dataset_name`: Hugging Face dataset identifier (e.g., `mteb/scifact`, `mteb/nfcorpus`)
 - `--output-dir PATH`: Output directory (default: `./_data/mteb`)
-- `--sample N`: Download only N documents with corresponding queries/qrels
-- `--language LANG`: Language code for multilingual datasets (e.g., `de`, `en`, `es`). Auto-detects available languages and defaults to first if not specified.
+- `--sample N`: Target N documents using query-led sampling. All positive documents for selected queries are retained, so the result can exceed N.
+- `--query-sample N`: Select exactly N evaluation queries before collecting their positive documents and distractors.
+- `--seed N`: Sampling seed (default: `42`).
+- `--language LANG`: Language code for multilingual datasets. Required when multiple complete language configurations exist.
+- `--split SPLIT`: Evaluation split. Required when qrels provides multiple splits.
+- `--revision REV`: Hugging Face dataset revision (default: `main`).
+
+Each download includes `dataset_manifest.json` with the repository revision,
+language, selected configurations and splits, source fingerprints, sampling
+parameters, counts, positive-document coverage, and judgments per query.
 
 **Popular MTEB retrieval datasets:**
 
