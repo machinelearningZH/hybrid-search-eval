@@ -21,7 +21,31 @@ def test_get_metric_k_values_supports_independent_and_legacy_configuration() -> 
 
 def test_get_max_k_finds_maximum_and_handles_no_metrics() -> None:
     assert get_max_k({"mrr": [1, 5], "hit_rate": [10]}) == 10
-    assert get_max_k({}) == 10
+
+
+@pytest.mark.parametrize(
+    "cutoffs",
+    [
+        {},
+        {"mrr": [10]},
+        {"mrr": [10], "hit_rate": []},
+        {"mrr": "10", "hit_rate": [10]},
+        {"mrr": [0], "hit_rate": [10]},
+        {"mrr": [True], "hit_rate": [10]},
+        {"mrr": [1.5], "hit_rate": [10]},
+        {"mrr": [10], "hit_rate": [10], "ndcg": [10]},
+    ],
+)
+def test_metric_helpers_reject_malformed_cutoff_dictionaries(
+    cutoffs: object,
+) -> None:
+    with pytest.raises(ValueError, match="metric cutoffs"):
+        get_max_k(cutoffs)  # type: ignore[arg-type]
+
+
+def test_get_metric_k_values_rejects_malformed_config() -> None:
+    with pytest.raises(ValueError, match="metric cutoffs"):
+        get_metric_k_values({"search": {"metrics": {"mrr_k": [], "hit_rate_k": [10]}}})
 
 
 def test_compute_metrics_respects_each_cutoff() -> None:
@@ -40,3 +64,8 @@ def test_compute_metrics_respects_each_cutoff() -> None:
             "hit_rate@3": 1.0,
         }
     )
+
+
+def test_compute_metrics_rejects_empty_query_results() -> None:
+    with pytest.raises(ValueError, match="query result collection.*empty"):
+        compute_metrics([], {"mrr": [10], "hit_rate": [10]})

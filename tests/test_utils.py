@@ -208,8 +208,149 @@ def test_mteb_data_defaults_missing_relevance_scores() -> None:
         qrels=qrels,
     )
 
-    assert qrels["score"].tolist() == [1]
+    assert "score" not in qrels.columns
+    assert data.qrels["score"].tolist() == [1]
     assert data.get_queries_list()[0]["relevant_ids"] == ["d1"]
+
+
+@pytest.mark.parametrize(
+    ("table", "corpus", "queries", "qrels"),
+    [
+        (
+            "corpus",
+            pd.DataFrame(columns=["id", "text"]),
+            pd.DataFrame([{"id": "q1", "text": "query"}]),
+            pd.DataFrame([{"query-id": "q1", "corpus-id": "d1"}]),
+        ),
+        (
+            "queries",
+            pd.DataFrame([{"id": "d1", "text": "document"}]),
+            pd.DataFrame(columns=["id", "text"]),
+            pd.DataFrame([{"query-id": "q1", "corpus-id": "d1"}]),
+        ),
+        (
+            "qrels",
+            pd.DataFrame([{"id": "d1", "text": "document"}]),
+            pd.DataFrame([{"id": "q1", "text": "query"}]),
+            pd.DataFrame(columns=["query-id", "corpus-id"]),
+        ),
+    ],
+)
+def test_mteb_data_rejects_empty_tables(
+    table: str,
+    corpus: pd.DataFrame,
+    queries: pd.DataFrame,
+    qrels: pd.DataFrame,
+) -> None:
+    with pytest.raises(ValueError, match=rf"{table}.*empty"):
+        MTEBRetrievalData(corpus, queries, qrels)
+
+
+@pytest.mark.parametrize("table", ["corpus", "queries"])
+@pytest.mark.parametrize("bad_text", [None, 12])
+def test_mteb_data_rejects_null_or_non_string_text(
+    table: str, bad_text: object
+) -> None:
+    corpus = pd.DataFrame([{"id": "d1", "text": "document"}])
+    queries = pd.DataFrame([{"id": "q1", "text": "query"}])
+    if table == "corpus":
+        corpus.loc[0, "text"] = bad_text
+    else:
+        queries.loc[0, "text"] = bad_text
+
+    with pytest.raises(ValueError, match=rf"{table}.*text.*1"):
+        MTEBRetrievalData(
+            corpus,
+            queries,
+            pd.DataFrame([{"query-id": "q1", "corpus-id": "d1"}]),
+        )
+
+
+@pytest.mark.parametrize("table", ["corpus", "queries"])
+def test_mteb_data_rejects_duplicate_ids_after_string_normalization(
+    table: str,
+) -> None:
+    corpus = pd.DataFrame([{"id": "d1", "text": "document"}])
+    queries = pd.DataFrame([{"id": "q1", "text": "query"}])
+    if table == "corpus":
+        corpus = pd.DataFrame(
+            [{"id": 1, "text": "first"}, {"id": "1", "text": "second"}]
+        )
+        corpus_id = 1
+    else:
+        queries = pd.DataFrame(
+            [{"id": 1, "text": "first"}, {"id": "1", "text": "second"}]
+        )
+        corpus_id = "d1"
+
+    with pytest.raises(ValueError, match=rf"{table}.*id.*duplicate.*1"):
+        MTEBRetrievalData(
+            corpus,
+            queries,
+            pd.DataFrame([{"query-id": 1, "corpus-id": corpus_id}]),
+        )
+
+
+@pytest.mark.parametrize("score", ["high", float("nan"), float("inf")])
+def test_mteb_data_rejects_non_numeric_or_non_finite_scores(score: object) -> None:
+    with pytest.raises(ValueError, match=r"qrels.*score.*1"):
+        MTEBRetrievalData(
+            pd.DataFrame([{"id": "d1", "text": "document"}]),
+            pd.DataFrame([{"id": "q1", "text": "query"}]),
+            pd.DataFrame(
+                [{"query-id": "q1", "corpus-id": "d1", "score": score}]
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("qrel_field", "qrel_id", "missing_id"),
+    [("query-id", "missing-query", "missing-query"), ("corpus-id", "missing-doc", "missing-doc")],
+)
+def test_mteb_data_rejects_qrels_with_missing_references(
+    qrel_field: str, qrel_id: str, missing_id: str
+) -> None:
+    qrel = {"query-id": "q1", "corpus-id": "d1", "score": 1}
+    qrel[qrel_field] = qrel_id
+
+    with pytest.raises(ValueError, match=rf"qrels.*{qrel_field}.*{missing_id}"):
+        MTEBRetrievalData(
+            pd.DataFrame([{"id": "d1", "text": "document"}]),
+            pd.DataFrame([{"id": "q1", "text": "query"}]),
+            pd.DataFrame([qrel]),
+        )
+
+
+def test_mteb_data_rejects_queries_without_positive_qrels() -> None:
+    with pytest.raises(ValueError, match=r"queries.*positive qrels.*q2"):
+        MTEBRetrievalData(
+            pd.DataFrame([{"id": "d1", "text": "document"}]),
+            pd.DataFrame(
+                [{"id": "q1", "text": "one"}, {"id": "q2", "text": "two"}]
+            ),
+            pd.DataFrame(
+                [
+                    {"query-id": "q1", "corpus-id": "d1", "score": 2.5},
+                    {"query-id": "q2", "corpus-id": "d1", "score": 0},
+                ]
+            ),
+        )
+
+
+def test_mteb_data_accepts_binary_and_graded_qrels() -> None:
+    binary = MTEBRetrievalData(
+        pd.DataFrame([{"id": "d1", "text": "document"}]),
+        pd.DataFrame([{"id": "q1", "text": "query"}]),
+        pd.DataFrame([{"query-id": "q1", "corpus-id": "d1"}]),
+    )
+    graded = MTEBRetrievalData(
+        pd.DataFrame([{"id": "d1", "text": "document"}]),
+        pd.DataFrame([{"id": "q1", "text": "query"}]),
+        pd.DataFrame([{"query-id": "q1", "corpus-id": "d1", "score": 2.5}]),
+    )
+
+    assert binary.qrels_dict == {"q1": {"d1": 1}}
+    assert graded.qrels_dict == {"q1": {"d1": 2.5}}
 
 
 @pytest.mark.parametrize(
