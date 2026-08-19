@@ -11,3 +11,9 @@
   qrels has several splits. Query-led corpus sampling treats `--sample` as a
   target: all positive documents for selected queries take precedence, so the
   saved corpus may exceed that target. The dataset manifest records this case.
+- Evaluation runs own only Weaviate collections whose names they generate and
+  record. Names include a random per-run nonce and per-collection counter;
+  collisions fail without deletion. Occupied embedded ports are treated as a
+  startup failure rather than permission to connect to an arbitrary local
+  server. Batch indexing is accepted only when it reports zero errors and the
+  aggregate object count matches the requested document count.

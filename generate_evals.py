@@ -3,9 +3,11 @@ import atexit
 import csv
 import gc
 import os
+import re
 import signal
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -61,8 +63,8 @@ from _core.utils import (
 
 console = Console()
 
-# Global reference for cleanup
-_weaviate_client: weaviate.WeaviateClient | None = None
+# Global reference used only by CLI cleanup handlers.
+_weaviate_resources: "WeaviateRunResources | None" = None
 
 
 @dataclass(frozen=True)
@@ -74,16 +76,133 @@ class PendingEmbeddingCache:
     metadata: dict[str, Any]
 
 
-def cleanup_weaviate() -> None:
-    """Cleanup Weaviate client on exit."""
-    global _weaviate_client
-    if _weaviate_client is not None:
+class WeaviateRunResources:
+    """Own the Weaviate client and collections created by one evaluation run."""
+
+    def __init__(self, client: Any, run_id: str | None = None) -> None:
+        self.client = client
+        self.run_id = self._sanitize_name_part(run_id or uuid.uuid4().hex[:12])
+        self.owned_collections: set[str] = set()
+        self._collection_names_by_id: dict[int, str] = {}
+        self._collection_counter = 0
+        self._closed = False
+
+    @staticmethod
+    def _sanitize_name_part(value: str) -> str:
+        sanitized = re.sub(r"[^A-Za-z0-9_]", "_", value).strip("_")
+        return sanitized or "unnamed"
+
+    def create_collection(self, label: str, **kwargs: Any) -> Any:
+        """Create and record a uniquely named collection without deleting collisions."""
+        self._collection_counter += 1
+        safe_label = self._sanitize_name_part(label)[:80]
+        collection_name = (
+            f"HybridEval_{safe_label}_{self.run_id}_{self._collection_counter}"
+        )
+        if self.client.collections.exists(collection_name):
+            raise RuntimeError(
+                f"Weaviate collection name collision for '{collection_name}'; "
+                "refusing to overwrite an existing collection"
+            )
+
+        collection = self.client.collections.create(name=collection_name, **kwargs)
+        self.owned_collections.add(collection_name)
+        self._collection_names_by_id[id(collection)] = collection_name
+        return collection
+
+    def delete_collection(self, collection_or_name: Any) -> None:
+        """Delete one collection only when this run recorded its ownership."""
+        if isinstance(collection_or_name, str):
+            collection_name = collection_or_name
+        else:
+            collection_name = self._collection_names_by_id.get(id(collection_or_name))
+            if collection_name is None:
+                raise ValueError("refusing to delete an unowned Weaviate collection")
+        if collection_name not in self.owned_collections:
+            raise ValueError(
+                f"refusing to delete unowned Weaviate collection '{collection_name}'"
+            )
+        if self.client.collections.exists(collection_name):
+            self.client.collections.delete(collection_name)
+        self.owned_collections.discard(collection_name)
+        self._collection_names_by_id = {
+            object_id: name
+            for object_id, name in self._collection_names_by_id.items()
+            if name != collection_name
+        }
+
+    def cleanup(self) -> None:
+        """Delete owned collections and close the client; never touch other data."""
+        if self._closed:
+            return
+
+        for collection_name in sorted(self.owned_collections):
+            try:
+                self.delete_collection(collection_name)
+            except Exception as error:  # noqa: BLE001 - cleanup must continue
+                console.print(
+                    f"⚠️  Could not delete owned collection {collection_name}: {error}",
+                    style="yellow",
+                )
+            finally:
+                self.owned_collections.discard(collection_name)
+
         try:
-            _weaviate_client.close()
-            console.print("🧹 Weaviate instance closed.", style="dim")
-        except Exception:
-            pass  # Ignore errors during cleanup
-        _weaviate_client = None
+            self.client.close()
+        except Exception as error:  # noqa: BLE001 - cleanup must remain idempotent
+            console.print(f"⚠️  Could not close Weaviate: {error}", style="yellow")
+        self._closed = True
+
+
+def index_weaviate_documents(
+    collection: Any,
+    documents: list[dict[str, str]],
+    embeddings: Any | None = None,
+) -> None:
+    """Index documents and reject partial batches or unexpected object counts."""
+    if embeddings is not None and len(embeddings) != len(documents):
+        raise ValueError(
+            "document embedding count mismatch: "
+            f"expected {len(documents)}, got {len(embeddings)}"
+        )
+
+    with collection.batch.dynamic() as batch:
+        for index, document in enumerate(documents):
+            object_kwargs: dict[str, Any] = {
+                "properties": {
+                    "document_id": document["id"],
+                    "text": document["text"],
+                }
+            }
+            if embeddings is not None:
+                object_kwargs["vector"] = embeddings[index].tolist()
+            batch.add_object(**object_kwargs)
+
+    number_errors = int(getattr(batch, "number_errors", 0))
+    if number_errors:
+        failed_objects = getattr(collection.batch, "failed_objects", [])
+        sample = str(failed_objects[0])[:300] if failed_objects else "unavailable"
+        raise RuntimeError(
+            f"Weaviate batch import failed for {number_errors} object(s); "
+            f"sample failure: {sample}"
+        )
+
+    aggregate = collection.aggregate.over_all(total_count=True)
+    indexed_count = aggregate.total_count
+    if indexed_count != len(documents):
+        raise RuntimeError(
+            "Weaviate object count mismatch after import: "
+            f"expected {len(documents)}, got {indexed_count}"
+        )
+
+
+def cleanup_weaviate() -> None:
+    """Clean up resources owned by the active CLI run."""
+    global _weaviate_resources
+    if _weaviate_resources is not None:
+        _weaviate_resources.cleanup()
+        _weaviate_resources = None
+        console.print("🧹 Weaviate resources cleaned up.", style="dim")
 
 
 def signal_handler(signum: int, frame: object) -> None:
@@ -96,10 +215,12 @@ def signal_handler(signum: int, frame: object) -> None:
     sys.exit(1)
 
 
-# Register cleanup handlers
-atexit.register(cleanup_weaviate)
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+def register_cleanup_handlers() -> None:
+    """Register process-wide cleanup handlers from the CLI entry point only."""
+    atexit.register(cleanup_weaviate)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
 
 # Matplotlib styling
 plt.style.use("ggplot")
@@ -230,6 +351,8 @@ def compute_metrics(
 
 
 def main() -> None:
+    register_cleanup_handlers()
+
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
         description="Hybrid Search Evaluation with Embedding Caching"
@@ -351,38 +474,22 @@ def main() -> None:
     # Initialize Weaviate embedded
     console.print("\n🔧 Starting Weaviate embedded instance...", style="bold cyan")
 
-    global _weaviate_client
+    global _weaviate_resources
     try:
         client = weaviate.connect_to_embedded(
             environment_variables={"LOG_LEVEL": "error"}
         )
         console.print("   ✓ Started new Weaviate embedded instance", style="green")
     except WeaviateStartUpError as e:
-        error_msg = str(e)
-        if "already listening on ports" in error_msg:
-            console.print(
-                "   ⚠️  [yellow]Weaviate embedded instance already running, connecting to existing instance...[/yellow]"
-            )
-            try:
-                client = weaviate.connect_to_local(port=8079, grpc_port=50050)
-                console.print(
-                    "   ✓ Connected to existing Weaviate instance", style="green"
-                )
-            except Exception as connect_error:
-                console.print(
-                    f"\n❌ [red]Failed to connect to existing Weaviate instance:[/red] {connect_error}"
-                )
-                console.print(
-                    "\n   [yellow]Try manually killing the Weaviate process:[/yellow]"
-                )
-                console.print("   [cyan]lsof -ti:8079 | xargs kill -9[/cyan]")
-                console.print("   [cyan]lsof -ti:50050 | xargs kill -9[/cyan]\n")
-                return
-        else:
-            console.print(f"\n❌ [red]Failed to start Weaviate:[/red] {e}")
-            return
+        console.print(f"\n❌ [red]Failed to start owned Weaviate instance:[/red] {e}")
+        console.print(
+            "   Refusing to connect to an arbitrary server on occupied ports.",
+            style="yellow",
+        )
+        return
 
-    _weaviate_client = client  # Store for cleanup handlers
+    resources = WeaviateRunResources(client)
+    _weaviate_resources = resources
 
     try:
         all_results = []
@@ -402,14 +509,9 @@ def main() -> None:
             bm25_model_name = "BM25"
             model_short = "Baseline_BM25"
 
-            # Create Weaviate collection for BM25 (delete if exists)
-            collection_name = "Documents"
-            if client.collections.exists(collection_name):
-                client.collections.delete(collection_name)
-
             console.print("   Creating Weaviate collection...", style="cyan")
-            collection = client.collections.create(
-                name=collection_name,
+            collection = resources.create_collection(
+                "BM25_Baseline",
                 properties=[
                     Property(name="document_id", data_type=DataType.TEXT),
                     Property(name="text", data_type=DataType.TEXT),
@@ -419,14 +521,7 @@ def main() -> None:
 
             # Index documents without vectors (BM25 only uses text)
             print_indexing("documents (text only)", len(documents))
-            with collection.batch.dynamic() as batch:
-                for document in documents:
-                    batch.add_object(
-                        properties={
-                            "document_id": document["id"],
-                            "text": document["text"],
-                        },
-                    )
+            index_weaviate_documents(collection, documents)
 
             print_indexed("documents", len(documents))
 
@@ -506,6 +601,8 @@ def main() -> None:
                 # Save eval results to cache
                 saved_path = save_eval_results(result, eval_cache_key, evals_dir)
                 print_saved_eval_to_cache(saved_path)
+
+            resources.delete_collection(collection)
 
         # Parse model configurations from the new YAML structure
         model_configs = parse_model_configs(config)
@@ -1093,16 +1190,11 @@ def main() -> None:
                         metadata=query_metadata,
                     )
 
-                # Create Weaviate collection for BM25 scoring (text only, no vectors)
-                collection_name = "Documents"
-                if client.collections.exists(collection_name):
-                    client.collections.delete(collection_name)
-
                 console.print(
                     "   Creating Weaviate collection for BM25...", style="cyan"
                 )
-                collection = client.collections.create(
-                    name=collection_name,
+                collection = resources.create_collection(
+                    f"{model_name}_ColBERT_BM25",
                     properties=[
                         Property(name="document_id", data_type=DataType.TEXT),
                         Property(name="text", data_type=DataType.TEXT),
@@ -1112,14 +1204,7 @@ def main() -> None:
 
                 # Index documents for BM25 (text only)
                 print_indexing("documents (text only for BM25)", len(documents))
-                with collection.batch.dynamic() as batch:
-                    for document in documents:
-                        batch.add_object(
-                            properties={
-                                "document_id": document["id"],
-                                "text": document["text"],
-                            },
-                        )
+                index_weaviate_documents(collection, documents)
                 print_indexed("documents", len(documents))
 
                 # Pre-compute all ColBERT MaxSim scores for efficiency
@@ -1313,6 +1398,8 @@ def main() -> None:
                     )
                     print_saved_to_cache(saved_path)
 
+                resources.delete_collection(collection)
+
                 # Cleanup ColBERT model
                 if model is not None:
                     del model
@@ -1324,14 +1411,9 @@ def main() -> None:
 
                 continue  # Skip the standard Weaviate flow for ColBERT
 
-            # Create Weaviate collection (delete if exists)
-            collection_name = "Documents"
-            if client.collections.exists(collection_name):
-                client.collections.delete(collection_name)
-
             console.print("   Creating Weaviate collection...", style="cyan")
-            collection = client.collections.create(
-                name=collection_name,
+            collection = resources.create_collection(
+                f"{model_name}_Vectors",
                 properties=[
                     Property(name="document_id", data_type=DataType.TEXT),
                     Property(name="text", data_type=DataType.TEXT),
@@ -1341,15 +1423,7 @@ def main() -> None:
 
             # Index documents (only once per model)
             print_indexing("documents", len(documents))
-            with collection.batch.dynamic() as batch:
-                for document, embedding in zip(documents, document_embeddings):
-                    batch.add_object(
-                        properties={
-                            "document_id": document["id"],
-                            "text": document["text"],
-                        },
-                        vector=embedding.tolist(),
-                    )
+            index_weaviate_documents(collection, documents, document_embeddings)
 
             print_indexed("documents", len(documents))
 
@@ -1412,6 +1486,7 @@ def main() -> None:
                     console.print(
                         f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
                     )
+                    resources.delete_collection(collection)
                     continue
 
                 print_generated_count("query embeddings", len(query_embeddings))
@@ -1536,6 +1611,8 @@ def main() -> None:
                 )
                 print_saved_to_cache(saved_path)
 
+            resources.delete_collection(collection)
+
             # Cleanup model if it was loaded
             if model is not None:
                 model.to("cpu")
@@ -1588,8 +1665,7 @@ def main() -> None:
     finally:
         # Cleanup
         console.print("\n🧹 Shutting down Weaviate...", style="bold cyan")
-        client.close()
-        _weaviate_client = None  # Clear global reference
+        cleanup_weaviate()
 
     console.print(Panel("✅ Evaluation complete!", style="bold green"))
 
