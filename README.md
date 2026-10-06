@@ -43,6 +43,23 @@ Sentence Transformers 6.x with `uv sync` and ordinary `uv run` commands. The two
 profiles cannot be enabled together. Model selection remains in
 `_configs/config.yaml`; enable `embeddings.colbert` only with the ColBERT profile.
 
+The [Makefile](Makefile) provides shortcuts; run `make help` for all commands:
+
+```bash
+make sync
+make eval
+make eval PROFILE=colbert
+make eval-force CONFIG=_configs/config.yaml
+make test ARGS="-q"
+make check
+make queries INPUT=my_documents.csv ARGS="--provider ollama --num-queries 5"
+make download DATASET=mteb/scifact ARGS="--sample 100"
+```
+
+Pass `PROFILE=colbert` to each Make command when using PyLate. `make check`
+checks formatting, lint, and tests in sequence, stopping on the first failure;
+`make format` applies formatting. `ARGS` accepts shell command-line arguments.
+
 ## Quick start
 
 The repository includes a small MTEB-format example dataset. Review
