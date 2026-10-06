@@ -2,10 +2,52 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pandas as pd
 import pytest
+from openai import APIConnectionError
 
+import generate_queries
 from generate_queries import generate_queries_for_document, load_documents_from_file
+
+
+@pytest.mark.parametrize("error", [RuntimeError("bug"), TypeError("bug")])
+def test_generate_queries_propagates_programming_errors(error: Exception) -> None:
+    def fail(**kwargs: Any) -> object:
+        raise error
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fail))
+    )
+    with pytest.raises(type(error), match="bug"):
+        generate_queries_for_document(client, "document", 1, "test", 2, 100, 0.2, 50)
+
+
+def test_generate_queries_retries_api_connection_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    waits: list[int] = []
+
+    def fail_once(**kwargs: Any) -> object:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise APIConnectionError(
+                request=httpx.Request("POST", "https://example.test")
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="query"))]
+        )
+
+    monkeypatch.setattr(generate_queries.time, "sleep", waits.append)
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fail_once))
+    )
+    assert generate_queries_for_document(
+        client, "document", 1, "test", 2, 100, 0.2, 50
+    ) == ["query"]
+    assert len(calls) == 2
+    assert waits == [1]
 
 
 class _FakeCompletions:

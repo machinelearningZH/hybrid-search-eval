@@ -1,5 +1,11 @@
 # Notes
 
+- Evaluation model-loading and encoding boundaries intentionally catch arbitrary
+  third-party exceptions so a failed model does not stop other evaluations. Keep
+  these local, documented Ruff exceptions; query generation retries only OpenAI
+  API errors and allows programming errors to propagate.
+- New embedding-cache metadata timestamps include UTC offsets. Result filenames
+  retain the local-time naming convention using a timezone-aware datetime.
 - PyLate is optional and imported only when ColBERT models are configured.
   The default `embeddings` dependency group selects Sentence Transformers 6.x;
   the mutually exclusive `colbert` group selects PyLate with 5.3.x. Use

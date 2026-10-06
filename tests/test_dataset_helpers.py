@@ -1,10 +1,13 @@
+import io
 import json
+import sys
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 import download_mteb_datasets
+import list_retrieval_datasets
 from download_mteb_datasets import (
     DatasetConfigs,
     detect_dataset_structure,
@@ -18,6 +21,56 @@ from list_retrieval_datasets import (
     _normalize_lang_code,
     _version_rank,
 )
+
+
+@pytest.mark.parametrize("selector", ["de", "MTEB(de, v2)"])
+def test_benchmark_fallback_selects_highest_version(
+    monkeypatch: pytest.MonkeyPatch, selector: str
+) -> None:
+    benchmarks = [
+        SimpleNamespace(name=name)
+        for name in ("MTEB(deu, v3)", "MTEB(deu, classic)", "MTEB(deu, v10)")
+    ]
+    monkeypatch.setitem(
+        sys.modules, "mteb", SimpleNamespace(get_benchmarks=lambda: benchmarks)
+    )
+    assert list_retrieval_datasets._resolve_benchmark_name(selector) == "MTEB(deu, v10)"
+
+
+def test_dataset_listing_leaves_stdout_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "argv", ["list_retrieval_datasets.py", "--format", "csv"])
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr(list_retrieval_datasets, "_get_mteb_version", lambda: "2.0")
+    monkeypatch.setattr(list_retrieval_datasets, "_load_tasks", lambda args: [])
+
+    assert list_retrieval_datasets.main() == 0
+    assert not output.closed
+
+
+def test_dataset_listing_closes_file_when_writing_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = io.StringIO()
+
+    def fail_write(*args: object, **kwargs: object) -> None:
+        raise OSError("write failed")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["list_retrieval_datasets.py", "--format", "json", "--out", "output.json"],
+    )
+    monkeypatch.setattr(
+        list_retrieval_datasets, "open", lambda *args, **kwargs: output, raising=False
+    )
+    monkeypatch.setattr(list_retrieval_datasets, "_get_mteb_version", lambda: "2.0")
+    monkeypatch.setattr(list_retrieval_datasets, "_load_tasks", lambda args: [])
+    monkeypatch.setattr(list_retrieval_datasets.json, "dump", fail_write)
+
+    with pytest.raises(OSError, match="write failed"):
+        list_retrieval_datasets.main()
+    assert output.closed
 
 
 @pytest.mark.parametrize(

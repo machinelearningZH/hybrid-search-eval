@@ -9,7 +9,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -856,7 +856,7 @@ def main() -> None:
                         f"   ✓ ColBERT model loaded (memory: [yellow]{model_memory_mb:.1f} MB[/yellow])",
                         style="cyan",
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - isolate third-party ColBERT model failures
                     error_type = type(e).__name__
                     error_msg = str(e)
                     console.print(
@@ -984,7 +984,7 @@ def main() -> None:
                         f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
                     )
                     continue
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - custom model code can raise arbitrary errors
                     # Catch any other unexpected errors during model loading
                     error_type = type(e).__name__
                     error_msg = str(e)
@@ -1090,7 +1090,7 @@ def main() -> None:
                             convert_to_numpy=True,
                             **passage_encode_kwargs,  # Pass model-specific encode parameters
                         )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - isolate backend failures to this model
                     error_type = type(e).__name__
                     error_msg = str(e)
                     console.print(
@@ -1134,7 +1134,7 @@ def main() -> None:
                     "avg_embed_time_per_doc_ms": avg_embed_time_per_doc_ms,
                     "model_memory_mb": model_memory_mb,
                     "peak_memory_mb": total_memory_mb,
-                    "created_at": datetime.now().isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
                     "batch_size": batch_size,
                     "is_colbert": is_colbert,
                 }
@@ -1174,7 +1174,7 @@ def main() -> None:
                             is_query=True,  # Encoding queries
                             show_progress_bar=True,
                         )
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 - isolate third-party ColBERT encoding failures
                         error_type = type(e).__name__
                         error_msg = str(e)
                         console.print(
@@ -1195,7 +1195,7 @@ def main() -> None:
                         "model_name": model_id,
                         "data_type": "queries",
                         "num_queries": len(queries),
-                        "created_at": datetime.now().isoformat(),
+                        "created_at": datetime.now(UTC).isoformat(),
                         "batch_size": batch_size,
                         "is_colbert": True,
                     }
@@ -1486,7 +1486,7 @@ def main() -> None:
                             convert_to_numpy=True,
                             **query_encode_kwargs,  # Pass model-specific encode parameters
                         )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - isolate backend failures and clean its collection
                     error_type = type(e).__name__
                     error_msg = str(e)
                     console.print(
@@ -1514,7 +1514,7 @@ def main() -> None:
                     "model_name": model_id,
                     "data_type": "queries",
                     "num_queries": len(queries),
-                    "created_at": datetime.now().isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
                     "batch_size": openrouter_batch_size
                     if use_openrouter
                     else batch_size,
@@ -1642,7 +1642,7 @@ def main() -> None:
         output_dir = Path(config["output"]["results_dir"])
         output_dir.mkdir(exist_ok=True, parents=True)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
         results_file = output_dir / f"results_{timestamp}.csv"
         with open(results_file, "w", newline="") as f:
             if all_results:

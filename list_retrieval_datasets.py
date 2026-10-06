@@ -1,17 +1,20 @@
 from __future__ import annotations
+
 import argparse
 import csv
 import json
+import re
 import sys
 from collections import defaultdict
+from collections.abc import Iterable
+from contextlib import nullcontext
 from dataclasses import asdict, is_dataclass
-from importlib.metadata import version as pkg_version, PackageNotFoundError
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-import re
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table
-
 
 DEFAULT_RETRIEVAL_TYPES = (
     "Retrieval",
@@ -124,11 +127,10 @@ def _resolve_benchmark_name(user_value: str, default_version: str = "v2") -> str
             prefix = f"MTEB({lang_norm}, "
             candidates = [b.name for b in benchmarks if b.name.startswith(prefix)]
             if candidates:
-                best = sorted(
+                best = max(
                     candidates,
                     key=lambda n: _version_rank(n.split(",")[-1].rstrip(")")),
-                    reverse=True,
-                )[0]
+                )
                 _warn(f'Benchmark "{candidate}" not found; falling back to "{best}".')
                 return best
 
@@ -146,11 +148,10 @@ def _resolve_benchmark_name(user_value: str, default_version: str = "v2") -> str
         prefix = f"MTEB({lang_norm}, "
         candidates = [b.name for b in benchmarks if b.name.startswith(prefix)]
         if candidates:
-            best = sorted(
+            best = max(
                 candidates,
                 key=lambda n: _version_rank(n.split(",")[-1].rstrip(")")),
-                reverse=True,
-            )[0]
+            )
             _warn(f'Benchmark "{candidate}" not found; falling back to "{best}".')
             return best
 
@@ -168,14 +169,14 @@ def _warn(msg: str) -> None:
     console.print(f"[bold yellow]⚠ {msg}[/bold yellow]")
 
 
-def _get_mteb_version() -> Optional[str]:
+def _get_mteb_version() -> str | None:
     try:
         return pkg_version("mteb")
     except PackageNotFoundError:
         return None
 
 
-def _ensure_v2x(ver: Optional[str]) -> None:
+def _ensure_v2x(ver: str | None) -> None:
     if ver is None:
         _warn("mteb is not installed. Install with: pip install -U mteb")
         return
@@ -186,7 +187,7 @@ def _ensure_v2x(ver: Optional[str]) -> None:
         )
 
 
-def _metadata_dataset_dict(task: Any) -> Dict[str, Any]:
+def _metadata_dataset_dict(task: Any) -> dict[str, Any]:
     """
     Task metadata in MTEB v2.x is a TaskMetadata object. 'dataset' is typically a dict like:
       {"path": "mteb/SomeRetrievalTask", "revision": "...", ...}
@@ -233,8 +234,8 @@ def _metadata_type(task: Any) -> str:
     return str(getattr(md, "type", "") or "")
 
 
-def _load_tasks(args: argparse.Namespace) -> List[Any]:
-    import mteb  # noqa: F401
+def _load_tasks(args: argparse.Namespace) -> list[Any]:
+    import mteb
 
     if args.benchmark:
         bench_name = _resolve_benchmark_name(args.benchmark, default_version="v2")
@@ -246,8 +247,8 @@ def _load_tasks(args: argparse.Namespace) -> List[Any]:
 
 
 def _filter_tasks_by_type(
-    tasks: Iterable[Any], allowed_types: Tuple[str, ...]
-) -> List[Any]:
+    tasks: Iterable[Any], allowed_types: tuple[str, ...]
+) -> list[Any]:
     out = []
     for t in tasks:
         t_type = _metadata_type(t)
@@ -303,7 +304,7 @@ def main() -> int:
 
     try:
         tasks = _load_tasks(args)
-    except Exception as e:
+    except (KeyError, ValueError, OSError) as e:
         _warn(f"Failed to load tasks via mteb: {e}")
         return 2
 
@@ -311,7 +312,7 @@ def main() -> int:
     tasks = _filter_tasks_by_type(tasks, tuple(args.task_types))
 
     # Collect dataset repos from metadata
-    per_task_rows: List[Dict[str, Any]] = []
+    per_task_rows: list[dict[str, Any]] = []
     for t in tasks:
         ds = _metadata_dataset_dict(t)
         path = ds.get("path") or ds.get("name") or ds.get("repo_id") or ""
@@ -330,8 +331,8 @@ def main() -> int:
 
     # Deduplicate to "all HF datasets" (unique repos/revisions), optionally including task lists
     if not args.no_dedupe:
-        grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        tasks_by_ds: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        tasks_by_ds: dict[tuple[str, str], list[str]] = defaultdict(list)
 
         for r in per_task_rows:
             key = (r["dataset_path"], r["dataset_revision"])
@@ -342,7 +343,7 @@ def main() -> int:
                     "dataset_revision": r["dataset_revision"],
                 }
 
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for key, base in sorted(grouped.items(), key=lambda x: (x[0][0], x[0][1])):
             row = dict(base)
             if args.include_task_names:
@@ -356,11 +357,11 @@ def main() -> int:
         )
 
     # Emit output
-    out_f = (
-        open(args.out, "w", newline="", encoding="utf-8") if args.out else sys.stdout
-    )
-
-    try:
+    with (
+        open(args.out, "w", newline="", encoding="utf-8")
+        if args.out
+        else nullcontext(sys.stdout)
+    ) as out_f:
         if args.format == "json":
             if out_f is sys.stdout:
                 from rich.json import JSON
@@ -432,9 +433,6 @@ def main() -> int:
                             console_out.print(
                                 f"{r['dataset_path']}\t{r['dataset_revision']}"
                             )
-    finally:
-        if args.out:
-            out_f.close()
 
     return 0
 

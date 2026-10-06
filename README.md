@@ -58,7 +58,9 @@ make download DATASET=mteb/scifact ARGS="--sample 100"
 
 Pass `PROFILE=colbert` to each Make command when using PyLate. `make check`
 checks formatting, lint, and tests in sequence, stopping on the first failure;
-`make format` applies formatting. `ARGS` accepts shell command-line arguments.
+`make format` applies safe Ruff lint fixes, then formats Python files even if
+some lint issues require manual fixes. Use `make lint` to check remaining issues.
+`ARGS` accepts shell command-line arguments.
 
 ## Quick start
 

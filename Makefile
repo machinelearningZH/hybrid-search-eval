@@ -31,7 +31,7 @@ help:
 	  '  make datasets      List available retrieval datasets' \
 	  '  make test          Run pytest' \
 	  '  make lint          Run Ruff lint checks' \
-	  '  make format        Format Python files with Ruff' \
+	  '  make format        Apply safe Ruff lint fixes, then format Python files' \
 	  '  make format-check  Check Python formatting without changing files' \
 	  '  make check         Run formatting, lint, and tests in sequence' \
 	  '' \
@@ -68,6 +68,7 @@ lint:
 	$(UV_RUN) ruff check . $(ARGS)
 
 format:
+	$(UV_RUN) ruff check --fix --exit-zero . $(ARGS)
 	$(UV_RUN) ruff format . $(ARGS)
 
 format-check:

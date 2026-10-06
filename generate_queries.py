@@ -7,7 +7,7 @@ from typing import cast
 
 import pandas as pd
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import APIError, OpenAI
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -161,7 +161,7 @@ def generate_queries_for_document(
 
             return queries[:num_queries]  # Ensure we don't exceed requested number
 
-        except Exception as e:
+        except APIError as e:
             if attempt < max_retries - 1:
                 wait_time = 2**attempt  # Exponential backoff
                 console.print(f"⚠️  Error (attempt {attempt + 1}/{max_retries}): {e}")
@@ -306,7 +306,7 @@ def generate_all_queries(
                             }
                         )
 
-                except Exception as e:
+                except (APIError, OSError, ValueError) as e:
                     doc_idx = futures[future]
                     console.print(f"⚠️  Error processing document {doc_idx}: {e}")
 
@@ -401,7 +401,7 @@ def main() -> int:
     try:
         config = load_config(str(args.config))
         query_gen_config = config.get("query_generation", {})
-    except Exception as e:
+    except (OSError, ValueError) as e:
         console.print(f"❌ [red]Error loading config: {e}[/red]")
         return 1
 
@@ -467,7 +467,7 @@ def main() -> int:
             mteb_data = load_mteb_retrieval_data_from_dir(str(args.mteb_input_dir))
             documents_df = mteb_data.corpus[["id", "text"]]
             console.print(f"✅ Loaded {len(documents_df)} documents (MTEB format)")
-        except Exception as e:
+        except (OSError, ValueError) as e:
             console.print(f"❌ [red]Error loading MTEB corpus: {e}[/red]")
             return 1
     else:
@@ -488,7 +488,7 @@ def main() -> int:
         except ValueError as e:
             console.print(f"❌ [red]Error: {e}[/red]")
             return 1
-        except Exception as e:
+        except OSError as e:
             console.print(f"❌ [red]Error loading documents: {e}[/red]")
             return 1
 
@@ -519,7 +519,7 @@ def main() -> int:
             max_output_tokens=max_output_tokens,
             base_url=base_url,
         )
-    except Exception as e:
+    except (APIError, OSError, ValueError) as e:
         console.print(f"❌ [red]Error generating queries: {e}[/red]")
         return 1
 
