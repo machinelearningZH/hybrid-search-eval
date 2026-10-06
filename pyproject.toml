@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-embeddings = ["sentence-transformers>=6.0.0,<7"]
+embeddings = ["sentence-transformers>=6.0.0,<7", "transformers==5.19.0"]
 colbert = ["pylate>=1.3.4,<2", "sentence-transformers>=5.3.0,<5.4"]
 dev = [
     "mypy>=1.18.2",
@@ -43,6 +43,9 @@ dev = [
 
 [tool.uv]
 exclude-newer = "7 days"
+# Approved exception for EmbeddingGemma 2 support, first released in 5.19.0.
+# A fixed cutoff keeps later Transformers releases subject to review.
+exclude-newer-package = { transformers = "2026-10-07T00:00:00Z" }
 default-groups = ["dev", "embeddings"]
 conflicts = [[{ group = "embeddings" }, { group = "colbert" }]]
 

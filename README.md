@@ -30,8 +30,11 @@ cd hybrid-search-eval
 uv sync --locked
 ```
 
-The default environment uses Sentence Transformers 6.x without PyLate. To
-evaluate ColBERT models, switch to the optional PyLate profile (Sentence
+The default environment uses Sentence Transformers 6.x and Transformers 5.19.0
+without PyLate. Transformers 5.19.0 adds EmbeddingGemma 2 support; its exact pin
+has an approved fixed-date exception to the seven-day dependency cooldown.
+Other packages retain the cooldown. To evaluate ColBERT models, switch to the
+optional PyLate profile (Sentence
 Transformers 5.3.x):
 
 ```bash

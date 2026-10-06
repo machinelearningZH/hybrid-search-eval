@@ -1,5 +1,10 @@
 # Notes
 
+- EmbeddingGemma 2 needs Transformers 5.19.0; Sentence Transformers 6.x alone
+  does not provide the architecture. PyLate 1.6.0 requires Transformers <=5.3.0,
+  so the mutually exclusive profiles must resolve separate Transformers versions.
+  The 5.19.0 pin and package-specific cutoff were approved on 2026-10-06;
+  the global seven-day cooldown remains in place for other packages.
 - Evaluation model-loading and encoding boundaries intentionally catch arbitrary
   third-party exceptions so a failed model does not stop other evaluations. Keep
   these local, documented Ruff exceptions; query generation retries only OpenAI
