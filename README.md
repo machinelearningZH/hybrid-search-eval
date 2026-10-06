@@ -30,12 +30,13 @@ cd hybrid-search-eval
 uv sync --locked
 ```
 
-The default environment uses Sentence Transformers 6.x and Transformers 5.19.0
-without PyLate. Transformers 5.19.0 adds EmbeddingGemma 2 support; its exact pin
-has an approved fixed-date exception to the seven-day dependency cooldown.
+The default environment uses Sentence Transformers 6.x, Transformers 5.19.0,
+and torchvision without PyLate. EmbeddingGemma 2 requires torchvision to load
+its processor, including for text embeddings. Transformers 5.19.0 adds model
+support; its exact pin has an approved fixed-date exception to the seven-day
+dependency cooldown.
 Other packages retain the cooldown. To evaluate ColBERT models, switch to the
-optional PyLate profile (Sentence
-Transformers 5.3.x):
+optional PyLate profile (Sentence Transformers 5.3.x):
 
 ```bash
 uv sync --locked --no-group embeddings --group colbert

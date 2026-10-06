@@ -1,5 +1,9 @@
 # Notes
 
+- EmbeddingGemma 2's processor imports Gemma 4 image-processing code, which
+  requires torchvision even for text-only evaluation. Checking the model class
+  import alone does not verify that the Sentence Transformers loading path works;
+  verify processor loading and text encoding as well.
 - EmbeddingGemma 2 needs Transformers 5.19.0; Sentence Transformers 6.x alone
   does not provide the architecture. PyLate 1.6.0 requires Transformers <=5.3.0,
   so the mutually exclusive profiles must resolve separate Transformers versions.
