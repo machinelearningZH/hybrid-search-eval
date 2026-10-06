@@ -636,7 +636,7 @@ def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
 
     Raises:
         FileNotFoundError: If config file doesn't exist
-        yaml.YAMLError: If YAML parsing fails
+        ValueError: If YAML parsing fails or the configuration is empty
     """
     config_file = Path(config_path)
     if not config_file.exists():
@@ -693,12 +693,13 @@ class MTEBRetrievalData:
 
     MTEB 2.x Retrieval format:
     - corpus: DataFrame with columns ['id', 'text'] (optionally 'title')
-    - queries: DataFrame with columns ['id', 'text'] (optionally 'instruction')
+    - queries: DataFrame with columns ['id', 'text']; extra fields are not used
     - qrels: DataFrame with columns ['query-id', 'corpus-id'] (optionally 'score')
       If 'score' is missing, a default score of 1 is assumed (binary relevance).
 
-    Every query must have at least one qrel with a score greater than zero. Queries
-    without a positive judgment are rejected rather than evaluated as zero-scoring.
+    Every query must have at least one positive qrel row during validation.
+    Duplicate query/document pairs currently keep the last score when building
+    lookup dictionaries; this can remove an earlier positive judgment.
 
     Attributes:
         corpus: DataFrame containing corpus documents
@@ -903,8 +904,8 @@ class MTEBRetrievalData:
         """Get list of queries with relevant document IDs.
 
         Only documents with relevance score > 0 are considered relevant.
-        In MTEB format, score=0 indicates non-relevant (negative examples),
-        while score>=1 indicates relevant documents.
+        Nonpositive scores are excluded; positive fractional scores also count
+        as relevant. Graded scores are not used by MRR or Hit Rate.
 
         Returns:
             List of dicts with 'id', 'query', and 'relevant_ids' keys
@@ -1041,7 +1042,7 @@ def get_openrouter_embeddings(
 
 
 def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Parse model configurations from the new YAML structure.
+    """Parse provider-specific embedding configuration.
 
     Converts the nested embeddings.huggingface, embeddings.colbert, and
     embeddings.openrouter dictionaries into a flat list of model configurations
@@ -1309,7 +1310,9 @@ def generate_cache_key(
     data_type: str,
     cache_identity: dict[str, Any] | None = None,
 ) -> str:
-    """Generate a unique cache key for embeddings.
+    """Generate a deterministic key from model and preprocessing settings.
+
+    Dataset contents, row order, truncation, and model revision are not hashed.
 
     Args:
         project_id: The project identifier
@@ -1414,8 +1417,8 @@ def save_colbert_embeddings(
 ) -> Path:
     """Save ColBERT multi-vector embeddings to disk with metadata.
 
-    ColBERT produces variable-length token embeddings per document/query,
-    so we store them as a list of 2D arrays using numpy's object dtype.
+    Store each variable-length 2D embedding as a separate named array in a
+    compressed NPZ archive, together with the array count.
 
     Args:
         embeddings: List of 2D arrays, each of shape (num_tokens, embedding_dim)
@@ -1428,9 +1431,8 @@ def save_colbert_embeddings(
     """
     embeddings_dir.mkdir(exist_ok=True, parents=True)
 
-    # Save embeddings as numpy array with object dtype to handle variable lengths
+    # Separate named arrays preserve variable token counts.
     embeddings_file = embeddings_dir / f"{cache_key}_colbert.npz"
-    # Convert to object array for variable-length storage
     np.savez_compressed(
         embeddings_file,
         **{f"emb_{i}": emb for i, emb in enumerate(embeddings)},
@@ -1501,7 +1503,9 @@ def generate_eval_cache_key(
     metric_k_values: dict[str, list[int]] | None = None,
     cache_identity: dict[str, Any] | None = None,
 ) -> str:
-    """Generate a unique cache key for evaluation results.
+    """Generate a deterministic key from selected evaluation settings.
+
+    Dataset contents and several runtime retrieval settings are not hashed.
 
     Args:
         project_id: The project identifier
@@ -1518,7 +1522,7 @@ def generate_eval_cache_key(
     Returns:
         A hash-based cache key
     """
-    # Create a deterministic key based on all eval parameters
+    # Include the evaluation parameters supplied to this helper.
     # Include display_name in hash to disambiguate same model_id used via different providers
     key_string = f"{project_id}_{model_id}_{display_name}_alpha{alpha}_k{k}"
 

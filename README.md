@@ -1,10 +1,10 @@
 # Hybrid Search Evaluation Tool
 
 ![GitHub License](https://img.shields.io/github/license/machinelearningZH/hybrid-search-eval)
-[![PyPI - Python](https://img.shields.io/badge/python-v3.12+-blue.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
+[![Python](https://img.shields.io/badge/python-3.12-blue.svg)](pyproject.toml)
 [![GitHub Stars](https://img.shields.io/github/stars/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval.svg)](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval)
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/pulls)
 [![Current Version](https://img.shields.io/badge/version-0.3.0-green.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
 <a href="https://github.com/astral-sh/ruff"><img alt="linting - Ruff" class="off-glb" loading="lazy" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
 
@@ -13,20 +13,21 @@ tool evaluates local Sentence Transformers, OpenRouter embedding models, and
 ColBERT late-interaction models against an [MTEB 2.x](https://github.com/embeddings-benchmark/mteb)
 retrieval dataset using Weaviate.
 
-It reports MRR@K, Hit Rate@K, corpus-embedding latency, and a process-memory
-estimate for each configured model and alpha value.
+It reports MRR@K and Hit Rate@K for evaluated model/alpha pairs, with
+corpus-embedding latency and process-memory estimates where available.
 
 ![Example evaluation dashboard](_imgs/05_dashboard.png)
 
 ## Install
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then clone
-the project and create its environment:
+the project and create its Python 3.12 environment. Run commands from the
+repository root:
 
 ```bash
 git clone https://github.com/machinelearningZH/hybrid-search-eval.git
 cd hybrid-search-eval
-uv sync
+uv sync --locked
 ```
 
 The default environment uses Sentence Transformers 6.x without PyLate. To
@@ -34,13 +35,13 @@ evaluate ColBERT models, switch to the optional PyLate profile (Sentence
 Transformers 5.3.x):
 
 ```bash
-uv sync --no-group embeddings --group colbert
-uv run --no-group embeddings --group colbert generate_evals.py
+uv sync --locked --no-group embeddings --group colbert
+uv run --locked --no-group embeddings --group colbert generate_evals.py
 ```
 
 Use the same group flags for subsequent commands in that profile. Return to
-Sentence Transformers 6.x with `uv sync` and ordinary `uv run` commands. The two
-profiles cannot be enabled together. Model selection remains in
+Sentence Transformers 6.x with `uv sync --locked` and ordinary `uv run` commands.
+The two profiles cannot be enabled together. Model selection remains in
 `_configs/config.yaml`; enable `embeddings.colbert` only with the ColBERT profile.
 
 The [Makefile](Makefile) provides shortcuts; run `make help` for all commands:
@@ -74,7 +75,7 @@ uv run generate_evals.py
 Results are written to `_results/`; embeddings and evaluation results are cached
 in `_cache_embeddings/` and `_cache_evals/`.
 
-The main settings are:
+A minimal configuration for the included dataset is:
 
 ```yaml
 project_id: "my-evaluation"
@@ -101,6 +102,11 @@ search:
 model:
   embedding_batch_size: 32
   max_document_tokens: 512
+
+output:
+  results_dir: "./_results"
+
+visualization: {}
 ```
 
 Use a separate configuration with `--config PATH`, and pass
@@ -122,19 +128,26 @@ uv run generate_queries.py my_documents.csv
 uv run generate_queries.py corpus.parquet --num-queries 5 --output-dir _data/my_dataset
 ```
 
-For a local Ollama model:
+With Ollama installed and running, use a local model:
 
 ```bash
 ollama pull llama3.2:latest
 uv run generate_queries.py my_documents.csv --provider ollama --model llama3.2:latest
 ```
 
-`--max-workers`, `--model`, and `--ollama-url` override the corresponding
-configuration values. To add queries to an existing MTEB corpus, use:
+`--max-workers` and `--model` override provider-specific configuration values.
+For Ollama, `--ollama-url` sets the endpoint; the current CLI does not read
+`query_generation.ollama.url` from YAML.
+
+To generate a new query/qrels set from an existing MTEB corpus, use:
 
 ```bash
-uv run generate_queries.py ignored --mteb-input-dir _data/mteb/scifact --num-queries 5
+uv run generate_queries.py ignored --mteb-input-dir _data/mteb/scifact --num-queries 5 --output-dir _data/my_dataset
 ```
+
+This reads all three input Parquet files and validates the existing dataset.
+It replaces the files in the output directory; it does not append to existing
+queries or qrels. The default output directory is `_data/mteb_user`.
 
 ### Download an MTEB dataset
 
@@ -146,9 +159,15 @@ uv run download_mteb_datasets.py mteb/XMarket --language de --split test
 
 Downloads are stored in `_data/mteb/` by default and include a
 `dataset_manifest.json` with the source revision, selected split/language, and
-sampling details. `--sample` uses seeded, query-led sampling and can retain more
-than the requested number of documents to preserve positive judgments. Use
-`--query-sample` to select an exact number of evaluation queries first.
+sampling details. Select `--language` or `--split` explicitly when repository
+metadata is ambiguous. Dataset names, language codes, and splits in these
+examples depend on upstream availability; they are not verified by local tests.
+
+`--sample` uses seeded, query-led sampling and can retain more than the requested
+number of documents to preserve positive judgments. With `--sample`, use
+`--query-sample N` to select up to N available queries first. The manifest records
+the supplied revision (default: `main`), not a resolved immutable commit; use
+`--revision` to request a specific revision.
 
 To inspect available retrieval datasets:
 
@@ -165,15 +184,26 @@ Set `data.mteb_data_dir` to a directory containing these files:
 | --- | --- |
 | `corpus.parquet` | `id`, `text`; optional `title` |
 | `queries.parquet` | `id`, `text` |
-| `qrels.parquet` | `query-id`, `corpus-id`, `score` |
+| `qrels.parquet` | `query-id`, `corpus-id`; optional `score` (defaults to 1) |
+
+Tables must be nonempty. Corpus/query IDs must be unique after string
+normalization, text must contain strings, qrels must reference existing IDs,
+and every query must have a positive judgment. Scores must be finite numbers;
+only `score > 0` counts as relevant. Avoid duplicate query/document judgment
+pairs: the current loader keeps the last score for each pair.
 
 ## Models and search modes
+
+Model IDs in the configuration and examples are not compatibility guarantees;
+the local tests do not download models or verify provider availability.
 
 - Configure Sentence Transformers under `embeddings.huggingface`. A model entry
   can be a model ID or a mapping with `model`, prefix options
   (`use_query_prefix`, `use_passage_prefix`), prompt options
   (`use_query_prompt`, `use_passage_prompt`), or explicit
-  `query_prompt_name` / `passage_prompt_name`.
+  `query_prompt_name` / `passage_prompt_name`. Explicit prompt names take
+  precedence over the corresponding prompt flags. These options apply only to
+  the Sentence Transformers backend.
 - Configure OpenRouter models under `embeddings.openrouter.models`; they require
   `OPENROUTER_API_KEY` in `.env`. See the
   [available embedding models](https://openrouter.ai/models?fmt=cards&output_modalities=embeddings).
@@ -181,30 +211,39 @@ Set `data.mteb_data_dir` to a directory containing these files:
   MaxSim scores; mixed alpha values combine those scores with BM25.
 
 > [!IMPORTANT]
-> Documents are embedded only up to `model.max_document_tokens` (512 by
-> default). Their titles are not currently included in indexed text. Results can
-> therefore differ from benchmarks that use full document text or model-specific
-> tokenizers.
+> Document text is truncated using `cl100k_base` to `model.max_document_tokens`
+> (512 by default) before both BM25 indexing and embedding. Prefixes are added
+> afterward, and models may truncate again with their own tokenizers. Titles and
+> extra query fields are not used for retrieval.
 
 > [!CAUTION]
-> Sentence Transformers models are loaded with `trust_remote_code=True` to
+> Local Sentence Transformers and ColBERT models use `trust_remote_code=True` to
 > support custom architectures. Evaluate the trustworthiness of every model
-> repository before using it.
+> repository before using it. Use only trusted embedding caches: the current
+> ColBERT loader permits pickled NumPy arrays.
 
 ## Outputs and interpretation
 
-Each run produces CSV results, metric charts, a quality-versus-embedding-latency
-trade-off chart, a memory chart, and an interactive HTML dashboard. The dashboard
-embeds its result data but loads Tailwind CSS from a CDN, so styled viewing needs
-network access.
+Runs with results write a CSV, metric charts, and an interactive HTML dashboard.
+Embedding results also produce embedding-time and quality-versus-embedding-latency
+charts; a memory chart requires recorded memory data. The dashboard embeds its
+result data but loads Tailwind CSS from a CDN, so styled viewing needs network
+access.
 
-- **MRR@K** measures the rank of the first relevant result.
+- **MRR@K** averages the reciprocal rank of the first relevant result within K,
+  using zero for misses.
 - **Hit Rate@K** is the share of queries with at least one relevant result in the
   top K.
-- **Latency** is corpus embedding time only; it excludes query embedding,
-  indexing, retrieval, reranking, and network transfer.
+- **Latency** is corpus embedding time only; it excludes model loading, query
+  embedding, indexing, retrieval, and reranking. For OpenRouter it includes the
+  embedding request and network time. Cache hits reuse the recorded timing.
 - **Memory** is a sampled process-RSS delta. It is not a peak measurement and
   excludes accelerator memory.
+- **Pareto flags** compare one quality metric with document-embedding latency.
+  `visualization.pareto_quality_metric` selects that metric; otherwise the highest
+  MRR cutoff is used, falling back to the highest Hit Rate cutoff. Memory is not
+  part of the comparison, and BM25 is unclassified. Charts and the dashboard use
+  the same calculation.
 
 Treat results as evidence for the configured experiment, not universal model
 rankings. In particular:
@@ -214,15 +253,21 @@ rankings. In particular:
 - MRR and Hit Rate use binary relevance and do not measure recall or graded
   relevance. Preserve per-query results and assess uncertainty before relying on
   small differences.
-- ColBERT MaxSim is computed exhaustively across the corpus, so it is a quality
-  upper bound rather than a production-throughput measurement. Its score fusion
-  is not directly comparable with Weaviate hybrid fusion at the same alpha.
+- ColBERT MaxSim is computed exhaustively across the corpus, without a candidate
+  retrieval stage. This does not measure production retrieval throughput. Its
+  min-max score fusion differs from Weaviate hybrid fusion at the same alpha;
+  `search.bm25_candidate_limit` affects only the ColBERT mixed-alpha path.
 - Cache keys do not include dataset contents, row order, truncation limits, model
   revisions, or every retrieval setting. Recompute after any relevant change and
   compare runs only when their inputs and environment match.
 - Query generation saves final Parquet files but not raw responses, provider
   revisions, or a failure manifest. Preserve those separately when auditability
-  matters.
+  matters. API failures can leave fewer queries than requested, and query IDs
+  follow worker completion order. The parser also strips leading digits and
+  punctuation, which can alter valid queries such as `3D printing`.
+- The evaluation CLI returns normally for some validation/startup failures and
+  can announce completion after skipping models or writing an empty CSV. Inspect
+  console errors and result rows; its exit status alone does not establish success.
 
 ## Project structure
 
@@ -233,7 +278,13 @@ rankings. In particular:
 | `download_mteb_datasets.py` | MTEB dataset download and sampling |
 | `list_retrieval_datasets.py` | MTEB retrieval-dataset discovery |
 | `_configs/config.yaml` | Default configuration |
+| `_core/utils.py` | Shared data/config validation, caches, metrics, and reporting |
+| `_core/dashboard_template.html` | HTML dashboard template |
+| `_core/utils_prompts.py` | Query-generation prompts |
 | `_data/` | MTEB datasets and user data |
+| `tests/` | Local unit tests and boundary fakes |
+| `Makefile` | Environment, evaluation, data, and quality commands |
+| `NOTES.md` | Implementation constraints and operational notes |
 
 ## Contributing
 
@@ -248,10 +299,7 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE).
 ## Disclaimer
 
 This evaluation tool (the Software) evaluates user-defined open-source and
-closed-source embedding models (the Models). The Software has been developed
-according to and with the intent to be used under Swiss law. Please be aware that
-the EU Artificial Intelligence Act (EU AI Act) may, under certain circumstances,
-be applicable to your use of the Software. You are solely responsible for
+closed-source embedding models (the Models). You are solely responsible for
 ensuring that your use of the Software as well as of the underlying Models
 complies with all applicable local, national and international laws and
 regulations. By using this Software, you acknowledge and agree (a) that it is

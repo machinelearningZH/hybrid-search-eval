@@ -4,27 +4,22 @@
   third-party exceptions so a failed model does not stop other evaluations. Keep
   these local, documented Ruff exceptions; query generation retries only OpenAI
   API errors and allows programming errors to propagate.
-- New embedding-cache metadata timestamps include UTC offsets. Result filenames
-  retain the local-time naming convention using a timezone-aware datetime.
-- PyLate is optional and imported only when ColBERT models are configured.
-  The default `embeddings` dependency group selects Sentence Transformers 6.x;
-  the mutually exclusive `colbert` group selects PyLate with 5.3.x. Use
-  `--no-group embeddings --group colbert` on both `uv sync` and `uv run`;
-  ordinary `uv run` restores the default profile.
+- New embedding-cache metadata writes use UTC offsets; existing cache metadata
+  is not migrated. Result filenames retain local-time names using an aware
+  datetime.
+- PyLate is imported when ColBERT models are configured, before data loading or
+  cache checks. Even a fully cached ColBERT run requires that backend. Profile
+  commands are documented in [README.md](README.md#install).
 - Snowflake Arctic Embed v2 models can load a corrupted non-persistent
   `embeddings.position_ids` buffer in their custom GTE module. The symptom is
   an out-of-bounds RoPE cache index during `SentenceTransformer.encode`, often
   showing a huge integer index with a small valid range. Resetting that buffer
   to `torch.arange(num_positions, device=..., dtype=...)` immediately after
-  model load fixes CPU and MPS encoding without changing model weights.
-- MTEB downloads must select an explicit language when several complete
-  language configuration groups exist and an explicit evaluation split when
-  qrels has several splits. Query-led corpus sampling treats `--sample` as a
-  target: all positive documents for selected queries take precedence, so the
-  saved corpus may exceed that target. The dataset manifest records this case.
-- Evaluation runs own only Weaviate collections whose names they generate and
-  record. Names include a random per-run nonce and per-collection counter;
-  collisions fail without deletion. Occupied embedded ports are treated as a
-  startup failure rather than permission to connect to an arbitrary local
-  server. Batch indexing is accepted only when it reports zero errors and the
-  aggregate object count matches the requested document count.
+  model load replaces that buffer without changing weights. The helper and
+  synthetic-buffer tests are in `_core/utils.py` and `tests/test_utils.py`;
+  those tests do not establish compatibility with every checkpoint or device.
+- `WeaviateRunResources` registers uniquely named collections and cleanup targets
+  only those collections. Name collisions fail without deletion; deletion
+  failures are reported while cleanup continues. Embedded startup failure does
+  not trigger a connection to another server. `index_weaviate_documents` checks
+  document/vector counts, batch errors, and the final indexed object count.
