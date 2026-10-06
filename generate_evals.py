@@ -17,8 +17,6 @@ import matplotlib.pyplot as plt
 import psutil
 import torch
 import weaviate
-from pylate import models as pylate_models
-from pylate import rank as pylate_rank
 from rich.console import Console
 from rich.panel import Panel
 from sentence_transformers import SentenceTransformer
@@ -65,6 +63,22 @@ console = Console()
 
 # Global reference used only by CLI cleanup handlers.
 _weaviate_resources: "WeaviateRunResources | None" = None
+
+
+def load_pylate() -> tuple[Any, Any]:
+    """Load the optional ColBERT backend, with installation guidance if absent."""
+    try:
+        from pylate import models, rank
+    except ModuleNotFoundError as error:
+        if error.name != "pylate":
+            raise
+        raise ImportError(
+            "ColBERT models require the optional PyLate backend. Run "
+            "`uv sync --no-group embeddings --group colbert`, then "
+            "`uv run --no-group embeddings --group colbert generate_evals.py`. "
+            "This profile uses Sentence Transformers 5.3.x instead of 6.x."
+        ) from error
+    return models, rank
 
 
 @dataclass(frozen=True)
@@ -392,6 +406,11 @@ def main() -> None:
     console.print("   ✅ Configuration is valid", style="green")
     console.print(f"📋 Project ID: [yellow]{config['project_id']}[/yellow]")
 
+    model_configs = parse_model_configs(config)
+    pylate_models = pylate_rank = None
+    if any(model_config.get("is_colbert", False) for model_config in model_configs):
+        pylate_models, pylate_rank = load_pylate()
+
     # Setup embeddings directory
     embeddings_dir = Path(
         config.get("embeddings", {}).get("cache_dir", "_cache_embeddings")
@@ -603,9 +622,6 @@ def main() -> None:
                 print_saved_eval_to_cache(saved_path)
 
             resources.delete_collection(collection)
-
-        # Parse model configurations from the new YAML structure
-        model_configs = parse_model_configs(config)
 
         if not model_configs:
             console.print(

@@ -1,5 +1,10 @@
 # Notes
 
+- PyLate is optional and imported only when ColBERT models are configured.
+  The default `embeddings` dependency group selects Sentence Transformers 6.x;
+  the mutually exclusive `colbert` group selects PyLate with 5.3.x. Use
+  `--no-group embeddings --group colbert` on both `uv sync` and `uv run`;
+  ordinary `uv run` restores the default profile.
 - Snowflake Arctic Embed v2 models can load a corrupted non-persistent
   `embeddings.position_ids` buffer in their custom GTE module. The symptom is
   an out-of-bounds RoPE cache index during `SentenceTransformer.encode`, often

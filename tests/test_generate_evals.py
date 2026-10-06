@@ -1,3 +1,4 @@
+import builtins
 import importlib
 import signal
 import sys
@@ -206,3 +207,42 @@ def test_importing_generate_evals_does_not_register_signal_handlers(
     importlib.import_module("generate_evals")
 
     assert calls == []
+
+
+def test_importing_generate_evals_does_not_require_pylate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    def without_pylate(name: str, *args: object, **kwargs: object) -> object:
+        if name == "pylate" or name.startswith("pylate."):
+            raise ModuleNotFoundError("No module named 'pylate'", name="pylate")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_pylate)
+    module = importlib.reload(sys.modules["generate_evals"])
+
+    with pytest.raises(ImportError, match="--no-group embeddings --group colbert"):
+        module.load_pylate()
+
+
+def test_load_pylate_returns_backend_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = SimpleNamespace(models=object(), rank=object())
+    monkeypatch.setitem(sys.modules, "pylate", backend)
+
+    assert generate_evals.load_pylate() == (backend.models, backend.rank)
+
+
+def test_load_pylate_preserves_missing_transitive_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    def broken_pylate(name: str, *args: object, **kwargs: object) -> object:
+        if name == "pylate":
+            raise ModuleNotFoundError("No module named 'other'", name="other")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken_pylate)
+    with pytest.raises(ModuleNotFoundError, match="other"):
+        generate_evals.load_pylate()

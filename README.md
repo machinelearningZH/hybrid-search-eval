@@ -29,6 +29,20 @@ cd hybrid-search-eval
 uv sync
 ```
 
+The default environment uses Sentence Transformers 6.x without PyLate. To
+evaluate ColBERT models, switch to the optional PyLate profile (Sentence
+Transformers 5.3.x):
+
+```bash
+uv sync --no-group embeddings --group colbert
+uv run --no-group embeddings --group colbert generate_evals.py
+```
+
+Use the same group flags for subsequent commands in that profile. Return to
+Sentence Transformers 6.x with `uv sync` and ordinary `uv run` commands. The two
+profiles cannot be enabled together. Model selection remains in
+`_configs/config.yaml`; enable `embeddings.colbert` only with the ColBERT profile.
+
 ## Quick start
 
 The repository includes a small MTEB-format example dataset. Review

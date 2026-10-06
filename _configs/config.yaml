@@ -29,6 +29,7 @@ embeddings:
       model: intfloat/multilingual-e5-small
       use_query_prefix: true
       use_passage_prefix: true
+    google-embeddinggemma-2: google/embeddinggemma-2
     # malteos-most-embed-de: malteos/most-embed-de
     # e5-base:
     #   model: intfloat/multilingual-e5-base
@@ -82,6 +83,8 @@ embeddings:
     # voyage-4-nano: voyageai/voyage-4-nano
 
   # ColBERT late-interaction models (use pylate for multi-vector embeddings + MaxSim scoring)
+  # Requires: uv run --no-group embeddings --group colbert generate_evals.py
+  # This optional profile uses Sentence Transformers 5.3.x instead of the default 6.x.
   # These models produce token-level embeddings and use late interaction for scoring.
   # Hybrid search combines ColBERT MaxSim scores with Weaviate BM25 using alpha weighting.
   # See: https://github.com/lightonai/pylate
