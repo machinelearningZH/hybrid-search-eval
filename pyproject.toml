@@ -1,6 +1,6 @@
 [project]
 name = "hybrid-search-eval"
-version = "0.3.0"
+version = "0.3.1"
 description = "A Hybrid Search Evaluation Tool"
 readme = "README.md"
 requires-python = "==3.12.*"
@@ -18,7 +18,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "einops>=0.8.1",
     "psutil>=5.9.0",
-    "pip>=25.3",
+    "pip>=26.2.2",
     "datasets>=4.4.2",
     "ruff>=0.14.10",
     "httpx>=0.28.1",
@@ -46,10 +46,12 @@ dev = [
 ]
 
 [tool.uv]
+constraint-dependencies = ["certifi>=2026.10.19", "pip>=26.2.2"]
 exclude-newer = "7 days"
 # Approved exception for EmbeddingGemma 2 support, first released in 5.19.0.
 # A fixed cutoff keeps later Transformers releases subject to review.
-exclude-newer-package = { transformers = "2026-10-07T00:00:00Z" }
+# eMudhra/emSign: remove only certifi/pip exceptions once artifacts age seven days.
+exclude-newer-package = { transformers = "2026-10-07T00:00:00Z", certifi = false, pip = false }
 default-groups = ["dev", "embeddings"]
 conflicts = [[{ group = "embeddings" }, { group = "colbert" }]]
 

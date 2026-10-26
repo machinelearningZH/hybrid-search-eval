@@ -32,3 +32,7 @@
   failures are reported while cleanup continues. Embedded startup failure does
   not trigger a connection to another server. `index_weaviate_documents` checks
   document/vector counts, batch errors, and the final indexed object count.
+
+## 2026-10-26: eMudhra/emSign certificate update
+
+Require certifi >=2026.10.19 and pip >=26.2.2. The prepared lockfile also updates other dependencies, including major versions of Pillow, Polars, and PyArrow. Keep the seven-day cooldown. Remove only the incident certifi exception after 2026-10-27 03:24:17 Europe/Zurich, then relock and sync. pip's separate cooldown exception can be removed after 2026-10-27 17:36:30 Europe/Zurich. Advisory: https://discuss.python.org/t/109576.
