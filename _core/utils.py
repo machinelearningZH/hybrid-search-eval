@@ -3,6 +3,7 @@ import json
 import math
 import os
 from pathlib import Path
+from types import MethodType
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -1269,19 +1270,48 @@ def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
     return model_configs
 
 
-def repair_snowflake_position_ids(model: Any, model_id: str) -> bool:
-    """Reset corrupted Snowflake GTE position IDs after model load.
+def repair_snowflake_attention_mask(model: Any, model_id: str) -> bool:
+    """Restore the encoder mask helper removed by Transformers 5 for Snowflake GTE."""
+    if "snowflake" not in model_id.lower():
+        return False
 
-    Some Snowflake Arctic Embed v2 checkpoints can load a non-persistent
-    `embeddings.position_ids` buffer with garbage values. The custom GTE model
-    uses that buffer to index RoPE caches, so encode() fails with huge
-    out-of-bounds indices unless it is rebuilt.
+    auto_model = model._first_module().auto_model
+    if hasattr(auto_model, "get_extended_attention_mask"):
+        return False
+
+    import torch
+
+    def get_extended_attention_mask(
+        self: Any, attention_mask: torch.Tensor, input_shape: tuple[int, ...]
+    ) -> torch.Tensor:
+        # GTE is a bidirectional encoder: only padding/pairwise masking is needed.
+        if attention_mask.ndim == 2:
+            extended_mask = attention_mask[:, None, None, :]
+        elif attention_mask.ndim == 3:
+            extended_mask = attention_mask[:, None, :, :]
+        else:
+            raise ValueError("Snowflake attention mask must have 2 or 3 dimensions")
+        extended_mask = extended_mask.to(dtype=self.dtype)
+        return (1.0 - extended_mask) * torch.finfo(self.dtype).min
+
+    auto_model.get_extended_attention_mask = MethodType(
+        get_extended_attention_mask, auto_model
+    )
+    return True
+
+
+def repair_snowflake_buffers(model: Any, model_id: str) -> bool:
+    """Rebuild non-persistent Snowflake GTE position and rotary buffers after load.
+
+    Transformers can leave these custom buffers uninitialized, causing invalid
+    RoPE indices or non-finite embeddings. Model weights are unchanged.
     """
     if "snowflake" not in model_id.lower():
         return False
 
     try:
-        embeddings = model._first_module().auto_model.embeddings
+        auto_model = model._first_module().auto_model
+        embeddings = auto_model.embeddings
         position_ids = embeddings.position_ids
         register_buffer = embeddings.register_buffer
     except AttributeError:
@@ -1297,11 +1327,17 @@ def repair_snowflake_position_ids(model: Any, model_id: str) -> bool:
         device=position_ids.device,
         dtype=position_ids.dtype,
     )
-    if torch.equal(position_ids, expected_position_ids):
-        return False
+    repaired = False
+    if not torch.equal(position_ids, expected_position_ids):
+        register_buffer("position_ids", expected_position_ids, persistent=False)
+        repaired = True
 
-    register_buffer("position_ids", expected_position_ids, persistent=False)
-    return True
+    if hasattr(embeddings, "rotary_emb"):
+        # Use GTE's own initializer to preserve its configured RoPE scaling.
+        with torch.device(position_ids.device):
+            embeddings._init_rope(auto_model.config)
+        repaired = True
+    return repaired
 
 
 def generate_cache_key(

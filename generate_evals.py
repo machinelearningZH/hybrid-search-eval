@@ -51,7 +51,8 @@ from _core.utils import (
     print_loading_cached,
     print_saved_eval_to_cache,
     print_saved_to_cache,
-    repair_snowflake_position_ids,
+    repair_snowflake_attention_mask,
+    repair_snowflake_buffers,
     save_colbert_embeddings,
     save_embeddings,
     save_eval_results,
@@ -898,9 +899,14 @@ def main() -> None:
                 console.print("   Loading model...", style="cyan")
                 try:
                     model = SentenceTransformer(model_id, **model_kwargs)
-                    if repair_snowflake_position_ids(model, model_id):
+                    if repair_snowflake_attention_mask(model, model_id):
                         console.print(
-                            "   ⚠️  [yellow]Snowflake model: repaired position_ids buffer[/yellow]",
+                            "   ⚠️  [yellow]Snowflake model: restored attention mask helper[/yellow]",
+                            style="dim",
+                        )
+                    if repair_snowflake_buffers(model, model_id):
+                        console.print(
+                            "   ⚠️  [yellow]Snowflake model: rebuilt position/rotary buffers[/yellow]",
                             style="dim",
                         )
                     memory_after_model_mb = get_memory_usage_mb()

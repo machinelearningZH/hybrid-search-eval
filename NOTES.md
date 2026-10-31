@@ -19,14 +19,16 @@
 - PyLate is imported when ColBERT models are configured, before data loading or
   cache checks. Even a fully cached ColBERT run requires that backend. Profile
   commands are documented in [README.md](README.md#install).
-- Snowflake Arctic Embed v2 models can load a corrupted non-persistent
-  `embeddings.position_ids` buffer in their custom GTE module. The symptom is
-  an out-of-bounds RoPE cache index during `SentenceTransformer.encode`, often
-  showing a huge integer index with a small valid range. Resetting that buffer
-  to `torch.arange(num_positions, device=..., dtype=...)` immediately after
-  model load replaces that buffer without changing weights. The helper and
-  synthetic-buffer tests are in `_core/utils.py` and `tests/test_utils.py`;
-  those tests do not establish compatibility with every checkpoint or device.
+- Snowflake Arctic Embed v2's custom GTE code calls `get_extended_attention_mask`,
+  removed in Transformers 5. Restore the bidirectional encoder mask helper on
+  the loaded instance only when missing. Non-persistent position IDs and rotary
+  buffers can also load uninitialized: invalid position IDs cause indexing
+  errors, while corrupt rotary caches can silently produce non-finite embeddings.
+  Rebuild position IDs and use GTE's native `_init_rope(config)` to preserve RoPE
+  scaling without changing weights. Helpers/tests live in `_core/utils.py` and
+  `tests/test_utils.py`. Offline CPU encoding with the cached Arctic Embed m-v2.0
+  checkpoint verified finite document/query embeddings and padding invariance;
+  other checkpoints and accelerator devices have not been verified.
 - `WeaviateRunResources` registers uniquely named collections and cleanup targets
   only those collections. Name collisions fail without deletion; deletion
   failures are reported while cleanup continues. Embedded startup failure does

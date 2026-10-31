@@ -25,7 +25,8 @@ from _core.utils import (
     load_eval_results,
     load_mteb_retrieval_data_from_dir,
     parse_model_configs,
-    repair_snowflake_position_ids,
+    repair_snowflake_attention_mask,
+    repair_snowflake_buffers,
     save_colbert_embeddings,
     save_embeddings,
     save_eval_results,
@@ -656,18 +657,96 @@ class _FakeSentenceTransformer:
         return self.module
 
 
-def test_repair_snowflake_position_ids_resets_corrupted_buffer() -> None:
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("pairwise", [False, True])
+def test_repair_snowflake_attention_mask_preserves_padding_and_dtype(
+    dtype: torch.dtype, pairwise: bool
+) -> None:
+    model = _FakeSentenceTransformer(torch.arange(3))
+    auto_model = model.module.auto_model
+    auto_model.dtype = dtype
+    mask = torch.tensor([[1, 1, 0], [1, 0, 0]])
+    if pairwise:
+        mask = mask[:, None, :].expand(2, 3, 3)
+
+    assert repair_snowflake_attention_mask(model, "Snowflake/model") is True
+    bias = auto_model.get_extended_attention_mask(mask, (2, 3))
+
+    expected = torch.tensor(
+        [
+            [[[0, 0, torch.finfo(dtype).min]]],
+            [[[0, torch.finfo(dtype).min, torch.finfo(dtype).min]]],
+        ],
+        dtype=dtype,
+    )
+    if pairwise:
+        expected = expected.expand(2, 1, 3, 3)
+    assert bias.dtype == dtype
+    assert bias.device == mask.device
+    torch.testing.assert_close(bias, expected)
+    assert repair_snowflake_attention_mask(model, "Snowflake/model") is False
+
+
+def test_repair_snowflake_attention_mask_preserves_existing_method() -> None:
+    model = _FakeSentenceTransformer(torch.arange(3))
+    sentinel = object()
+    model.module.auto_model.get_extended_attention_mask = sentinel
+
+    assert repair_snowflake_attention_mask(model, "Snowflake/model") is False
+    assert model.module.auto_model.get_extended_attention_mask is sentinel
+
+
+def test_repair_snowflake_attention_mask_leaves_other_models_unchanged() -> None:
+    model = _FakeSentenceTransformer(torch.arange(3))
+
+    assert repair_snowflake_attention_mask(model, "other/model") is False
+    assert not hasattr(model.module.auto_model, "get_extended_attention_mask")
+
+
+def test_repair_snowflake_attention_mask_rejects_invalid_dimensions() -> None:
+    model = _FakeSentenceTransformer(torch.arange(3))
+    repair_snowflake_attention_mask(model, "Snowflake/model")
+
+    with pytest.raises(ValueError, match="2 or 3 dimensions"):
+        model.module.auto_model.get_extended_attention_mask(torch.ones(3), (1, 3))
+
+
+def test_repair_snowflake_buffers_resets_corrupted_position_ids() -> None:
     model = _FakeSentenceTransformer(
         torch.tensor([0, 4320601048, -1], dtype=torch.long)
     )
 
-    repaired = repair_snowflake_position_ids(
+    repaired = repair_snowflake_buffers(
         model,
         "Snowflake/snowflake-arctic-embed-m-v2.0",
     )
 
     assert repaired is True
     assert model.module.auto_model.embeddings.position_ids.tolist() == [0, 1, 2]
+
+
+def test_repair_snowflake_buffers_rebuilds_rotary_with_valid_ids() -> None:
+    class RotaryEmbeddings(_FakeEmbeddings):
+        def __init__(self) -> None:
+            super().__init__(torch.arange(3))
+            self.rotary_emb = torch.nn.Module()
+            self.rotary_emb.register_buffer(
+                "cos_cached", torch.full((3,), float("nan"))
+            )
+
+        def _init_rope(self, config: Any) -> None:
+            self.rotary_emb = torch.nn.Module()
+            self.rotary_emb.register_buffer(
+                "cos_cached", torch.ones(config.max_position_embeddings)
+            )
+
+    model = _FakeSentenceTransformer(torch.arange(3))
+    model.module.auto_model.embeddings = RotaryEmbeddings()
+    model.module.auto_model.config = SimpleNamespace(max_position_embeddings=3)
+
+    assert repair_snowflake_buffers(model, "Snowflake/model") is True
+    rotary = model.module.auto_model.embeddings.rotary_emb
+    torch.testing.assert_close(rotary.cos_cached, torch.ones(3))
 
 
 @pytest.mark.parametrize(
@@ -679,9 +758,9 @@ def test_repair_snowflake_position_ids_resets_corrupted_buffer() -> None:
         ("Snowflake/model", [0, 1]),
     ],
 )
-def test_repair_snowflake_position_ids_leaves_inapplicable_buffers_unchanged(
+def test_repair_snowflake_buffers_leaves_inapplicable_buffers_unchanged(
     model_id: str, position_ids: object
 ) -> None:
     model = _FakeSentenceTransformer(position_ids)
 
-    assert repair_snowflake_position_ids(model, model_id) is False
+    assert repair_snowflake_buffers(model, model_id) is False
