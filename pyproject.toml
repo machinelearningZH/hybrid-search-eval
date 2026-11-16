@@ -46,12 +46,10 @@ dev = [
 ]
 
 [tool.uv]
-constraint-dependencies = ["certifi>=2026.10.19", "pip>=26.2.2"]
 exclude-newer = "7 days"
 # Approved exception for EmbeddingGemma 2 support, first released in 5.19.0.
 # A fixed cutoff keeps later Transformers releases subject to review.
-# eMudhra/emSign: remove only certifi/pip exceptions once artifacts age seven days.
-exclude-newer-package = { transformers = "2026-10-07T00:00:00Z", certifi = false, pip = false }
+exclude-newer-package = { transformers = "2026-10-07T00:00:00Z", }
 default-groups = ["dev", "embeddings"]
 conflicts = [[{ group = "embeddings" }, { group = "colbert" }]]
 
