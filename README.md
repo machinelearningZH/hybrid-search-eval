@@ -217,6 +217,9 @@ are rejected after ID normalization; clean duplicate rows before evaluation.
 
 Model IDs in the configuration and examples are not compatibility guarantees;
 the local tests do not download models or verify provider availability.
+The [2026-11-16 selection notes](NOTES.md#embedding-selection--2026-11-16)
+document the active additions, commercial-use licences, German MTEB/RTEB
+evidence, and manual model runtime checks.
 
 - Configure Sentence Transformers under `embeddings.huggingface`. A model entry
   can be a model ID or a mapping with `model`, prefix options

@@ -22,6 +22,8 @@ data:
 #    - query_prompt_name: prompt name to pass to encode() for queries, e.g. "web_search_query"
 #    - passage_prompt_name: prompt name to pass to encode() for passages/documents
 
+# Active additions reviewed 2026-11-16: open weights, commercial-use licences,
+# and German/multilingual retrieval. Sources and runtime checks: NOTES.md.
 # Commented model IDs are configuration examples, not verified compatibility claims.
 embeddings:
   huggingface:
@@ -30,8 +32,10 @@ embeddings:
       model: intfloat/multilingual-e5-small
       use_query_prefix: true
       use_passage_prefix: true
-    google-embeddinggemma-2: google/embeddinggemma-2
-    # malteos-most-embed-de: malteos/most-embed-de
+    google-embeddinggemma-2:
+      model: google/embeddinggemma-2
+      query_prompt_name: query
+      passage_prompt_name: document
     # e5-base:
     #   model: intfloat/multilingual-e5-base
     #   use_query_prefix: true
@@ -40,25 +44,33 @@ embeddings:
     #   model: intfloat/multilingual-e5-large
     #   use_query_prefix: true
     #   use_passage_prefix: true
-    # Nemotron-3-Embed-1B:
-    #   model: nvidia/Nemotron-3-Embed-1B-BF16
-    #   use_query_prefix: true
-    #   use_passage_prefix: true
-    # harrier-oss-v1-270m:
-    #   model: microsoft/harrier-oss-v1-270m
-    #   query_prompt_name: web_search_query
-    # harrier-oss-v1-0.6b:
-    #   model: microsoft/harrier-oss-v1-0.6b
-    #   query_prompt_name: web_search_query
+    # OpenMDW-1.1; 1.14B parameters, including German retrieval training.
+    Nemotron-3-Embed-1B:
+      model: nvidia/Nemotron-3-Embed-1B-BF16
+      use_query_prefix: true
+      use_passage_prefix: true
+    # MIT; compact multilingual quality/size comparison, including German.
+    harrier-oss-v1-270m:
+      model: microsoft/harrier-oss-v1-270m
+      query_prompt_name: web_search_query
+    harrier-oss-v1-0.6b:
+      model: microsoft/harrier-oss-v1-0.6b
+      query_prompt_name: web_search_query
     # harrier-oss-v1-27b: microsoft/harrier-oss-v1-27b
-    # perplexity-0.6b: perplexity-ai/pplx-embed-v1-0.6B
+    # MIT; no instructions, cosine-normalized quantized embeddings.
+    perplexity-0.6b: perplexity-ai/pplx-embed-v1-0.6B
     # perplexity-4b: perplexity-ai/pplx-embed-v1-4b
     granite-97m: ibm-granite/granite-embedding-97m-multilingual-r2
-    # granite-311m: ibm-granite/granite-embedding-311m-multilingual-r2
+    # Apache-2.0; larger sibling of the existing 97M multilingual baseline.
+    granite-311m: ibm-granite/granite-embedding-311m-multilingual-r2
     # jina-v2: jinaai/jina-embeddings-v2-base-de
-    # jina-v3: jinaai/jina-embeddings-v3
     # f2lllm-v2-80M: codefuse-ai/F2LLM-v2-80M
-    # f2lllm-v2-160M: codefuse-ai/F2LLM-v2-160M
+    # Apache-2.0; pruned multilingual decoder, query instruction required.
+    f2llm-v2-160m:
+      model: codefuse-ai/F2LLM-v2-160M
+      use_query_prompt: true
+    # MIT; 106M total / 7.7M active parameters, no prefixes.
+    bekko-a8m: hotchpotch/bekko-embedding-v1-a8m
     # mxbai-embed-large-v1: mixedbread-ai/mxbai-embed-large-v1
     # mxbai-embed-2d-large-v1: mixedbread-ai/mxbai-embed-2d-large-v1
     # mxbai-embed-xsmall-v1: mixedbread-ai/mxbai-embed-xsmall-v1
@@ -80,7 +92,11 @@ embeddings:
     # mdbr-leaf-ir-asym: mongodb/mdbr-leaf-ir-asym
     # luxical-one: DatologyAI/luxical-one-v1
     # mmbert-embed-32k-2d-matryoshka: llm-semantic-router/mmbert-embed-32k-2d-matryoshka
-    # voyage-4-nano: voyageai/voyage-4-nano
+    # Apache-2.0; 346M total parameters, distinct query/document prompts.
+    voyage-4-nano:
+      model: MongoDB/voyage-4-nano
+      query_prompt_name: query
+      passage_prompt_name: document
 
   # ColBERT late-interaction models (use pylate for multi-vector embeddings + MaxSim scoring)
   # Requires: uv run --no-group embeddings --group colbert generate_evals.py
