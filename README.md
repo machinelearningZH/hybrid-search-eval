@@ -267,8 +267,10 @@ is escaped for the script context.
 - **Latency** is corpus embedding time only; it excludes model loading, query
   embedding, indexing, retrieval, and reranking. For OpenRouter it includes the
   embedding request and network time. Cache hits reuse the recorded timing.
-- **Memory** is a sampled process-RSS delta. It is not a peak measurement and
-  excludes accelerator memory.
+- **RAM increase (MB)** is the extra process RAM (RSS) sampled after loading the
+  model and embedding documents. It is not a peak measurement and excludes
+  accelerator memory. `0` means no net increase was captured; `-` means unavailable
+  (BM25, API models, or cached embeddings without memory measurements).
 - **Pareto flags** compare one quality metric with document-embedding latency.
   `visualization.pareto_quality_metric` selects that metric; otherwise the highest
   MRR cutoff is used, falling back to the highest Hit Rate cutoff. Memory is not

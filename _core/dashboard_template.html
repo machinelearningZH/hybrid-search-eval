@@ -98,10 +98,12 @@
                                 </span>
                             </th>
                             <th class="px-4 py-3 text-left font-semibold text-gray-700 has-tooltip relative" data-sort="memory_mb">
-                                RSS delta (MB)
+                                RAM increase (MB)
                                 <span class="sort-arrow"></span>
-                                <span class="tooltip absolute bg-gray-800 text-white text-xs rounded px-2 py-1 -top-8 left-0 whitespace-nowrap z-10">
-                                    Sampled process RSS delta; unavailable measurements are shown as “-”
+                                <span class="tooltip absolute bg-gray-800 text-white text-xs font-normal rounded px-2 py-1 top-full right-0 w-80 whitespace-normal z-10">
+                                    Extra process RAM after loading and embedding documents (RSS).
+                                    Sampled, not peak; excludes GPU memory.
+                                    0 = no net increase; - = unavailable.
                                 </span>
                             </th>
                         </tr>
@@ -256,7 +258,7 @@
                     getBarWidth(row.memory_mb, 'memory_mb') : 0;
                 html += `<td class="px-4 py-3 metric-cell">
                     <div class="flex items-center gap-2">
-                        <span class="w-16 text-right">${{row.memory_mb > 0 ? formatNumber(row.memory_mb, 1) : '-'}}</span>
+                        <span class="w-16 text-right">${{formatNumber(row.memory_mb, 1)}}</span>
                         <div class="flex-1 bar-bg h-2 rounded overflow-hidden min-w-[60px]">
                             <div class="bar-fill h-full rounded" style="width: ${{memoryBarWidth}}%"></div>
                         </div>
