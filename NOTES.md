@@ -5,8 +5,8 @@
   import alone does not verify that the Sentence Transformers loading path works;
   verify processor loading and text encoding as well.
 - EmbeddingGemma 2 needs Transformers 5.19.0; Sentence Transformers 6.x alone
-  does not provide the architecture. PyLate 1.6.0 requires Transformers <=5.3.0,
-  so the mutually exclusive profiles must resolve separate Transformers versions.
+  does not provide the architecture. The optional PyLate profile was removed in
+  v0.4.1 because its pinned dependencies have known security vulnerabilities.
   The 5.19.0 pin and package-specific cutoff were approved on 2026-10-06;
   the global seven-day cooldown remains in place for other packages.
 - Evaluation model-loading and encoding boundaries intentionally catch arbitrary
@@ -16,9 +16,8 @@
 - New embedding-cache metadata writes use UTC offsets; existing cache metadata
   is not migrated. Result filenames retain local-time names using an aware
   datetime.
-- PyLate is imported when ColBERT models are configured, before data loading or
-  cache checks. Even a fully cached ColBERT run requires that backend. Profile
-  commands are documented in [README.md](README.md#install).
+- ColBERT configurations now return status 1 before data loading or cache checks.
+  The backend code and contract tests remain for restoration after upstream fixes.
 - Snowflake Arctic Embed v2's custom GTE code calls `get_extended_attention_mask`,
   removed in Transformers 5. Restore the bidirectional encoder mask helper on
   the loaded instance only when missing. Non-persistent position IDs and rotary
@@ -34,6 +33,22 @@
   failures are reported while cleanup continues. Embedded startup failure does
   not trigger a connection to another server. `index_weaviate_documents` checks
   document/vector counts, batch errors, and the final indexed object count.
+
+## Dependency security — v0.4.1
+
+- Removing PyLate also removes vulnerable Sentence Transformers 5.3.0,
+  Transformers 5.3.0, ujson 5.12.0, setuptools 81.0.0, and torch 2.11.0 from
+  the lockfile. The remaining environment uses patched versions. PyLate 1.6.0
+  still pins the vulnerable packages; overriding to Sentence Transformers 6.x
+  failed real ColBERT initialization with `KeyError: 'activation_function'`.
+  Restore support only with upstream-compatible patched dependencies and real
+  encoding/reranking checks.
+- Tornado is constrained to >=6.6.1. Its security fix was published on
+  2026-11-09, so a fixed 2026-11-10 cutoff admits it without admitting later
+  releases. The global seven-day cooldown remains unchanged.
+- Tracked CI now runs locked dependency sync, Ruff, and pytest on macOS ARM,
+  matching local validation without installing Linux CUDA dependencies. Actions
+  are pinned to full commit SHAs with read-only repository permissions.
 
 ## Review fixes — 2026-11-16
 

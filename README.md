@@ -5,12 +5,12 @@
 [![GitHub Stars](https://img.shields.io/github/stars/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/issues)
 [![GitHub Pull Requests](https://img.shields.io/github/issues-pr/machinelearningZH/hybrid-search-eval.svg)](https://github.com/machinelearningZH/hybrid-search-eval/pulls)
-[![Current Version](https://img.shields.io/badge/version-0.4.0-green.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
+[![Current Version](https://img.shields.io/badge/version-0.4.1-green.svg)](https://github.com/machinelearningZH/hybrid-search-eval)
 <a href="https://github.com/astral-sh/ruff"><img alt="linting - Ruff" class="off-glb" loading="lazy" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
 
 Benchmark embedding models for hybrid retrieval with BM25 and vector search. The
-tool evaluates local Sentence Transformers, OpenRouter embedding models, and
-ColBERT late-interaction models against an [MTEB 2.x](https://github.com/embeddings-benchmark/mteb)
+tool evaluates local Sentence Transformers and OpenRouter embedding models
+against an [MTEB 2.x](https://github.com/embeddings-benchmark/mteb)
 retrieval dataset using Weaviate.
 
 It reports MRR@K and Hit Rate@K for evaluated model/alpha pairs, with
@@ -35,25 +35,18 @@ and torchvision without PyLate. EmbeddingGemma 2 requires torchvision to load
 its processor, including for text embeddings. Transformers 5.19.0 adds model
 support; its exact pin has an approved fixed-date exception to the seven-day
 dependency cooldown.
-Other packages retain the cooldown. To evaluate ColBERT models, switch to the
-optional PyLate profile (Sentence Transformers 5.3.x):
+Tornado 6.6.1 also has a fixed-date exception for its security fix. Other packages
+retain the cooldown. Model selection remains in `_configs/config.yaml`.
 
-```bash
-uv sync --locked --no-group embeddings --group colbert
-uv run --locked --no-group embeddings --group colbert generate_evals.py
-```
-
-Use the same group flags for subsequent commands in that profile. Return to
-Sentence Transformers 6.x with `uv sync --locked` and ordinary `uv run` commands.
-The two profiles cannot be enabled together. Model selection remains in
-`_configs/config.yaml`; enable `embeddings.colbert` only with the ColBERT profile.
+ColBERT support and the optional PyLate profile are temporarily unavailable
+because PyLate pins vulnerable dependencies. Remove `embeddings.colbert` from
+existing configurations. Support can return when upstream allows patched versions.
 
 The [Makefile](Makefile) provides shortcuts; run `make help` for all commands:
 
 ```bash
 make sync
 make eval
-make eval PROFILE=colbert
 make eval-force CONFIG=_configs/config.yaml
 make test ARGS="-q"
 make check
@@ -61,8 +54,7 @@ make queries INPUT=my_documents.csv ARGS="--provider ollama --num-queries 5"
 make download DATASET=mteb/scifact ARGS="--sample 100"
 ```
 
-Pass `PROFILE=colbert` to each Make command when using PyLate. `make check`
-checks formatting, lint, and tests in sequence, stopping on the first failure;
+`make check` checks formatting, lint, and tests in sequence, stopping on the first failure;
 `make format` applies safe Ruff lint fixes, then formats Python files even if
 some lint issues require manual fixes. Use `make lint` to check remaining issues.
 `ARGS` accepts shell command-line arguments.
@@ -234,8 +226,8 @@ evidence, and manual model runtime checks.
   `embeddings.openrouter.settings.connect_timeout` and `read_timeout` set positive,
   finite timeouts in seconds (defaults: 10 and 120). Invalid or incomplete
   embedding responses fail that model's evaluation.
-- Configure ColBERT models under `embeddings.colbert`. They use token-level
-  MaxSim scores; mixed alpha values combine those scores with BM25.
+- ColBERT configurations are temporarily rejected until PyLate supports patched
+  dependencies.
 
 > [!IMPORTANT]
 > Document text is truncated using `cl100k_base` to `model.max_document_tokens`

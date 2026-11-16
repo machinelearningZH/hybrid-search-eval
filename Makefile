@@ -8,15 +8,11 @@ ARGS ?=
 
 export CONFIG INPUT DATASET
 
-ifeq ($(PROFILE),embeddings)
-UV_PROFILE :=
-else ifeq ($(PROFILE),colbert)
-UV_PROFILE := --no-group embeddings --group colbert
-else
-$(error PROFILE must be embeddings or colbert)
+ifneq ($(PROFILE),embeddings)
+$(error Only PROFILE=embeddings is available; ColBERT is temporarily disabled because PyLate pins vulnerable dependencies)
 endif
 
-UV_RUN := uv run --locked $(UV_PROFILE)
+UV_RUN := uv run --locked
 
 .PHONY: help sync eval eval-force queries download datasets test lint format format-check check
 
@@ -36,13 +32,11 @@ help:
 	  '  make check         Run formatting, lint, and tests in sequence' \
 	  '' \
 	  'Options:' \
-	  '  PROFILE=colbert    Use PyLate with Sentence Transformers 5.3.x' \
-	  '  PROFILE=embeddings Use Sentence Transformers 6.x (default)' \
 	  '  CONFIG=path.yaml   Override evaluation/query configuration' \
 	  '  ARGS="..."        Append shell command-line arguments (except sync/check/help)'
 
 sync:
-	uv sync --locked $(UV_PROFILE)
+	uv sync --locked
 
 eval:
 	$(UV_RUN) generate_evals.py --config "$$CONFIG" $(ARGS)

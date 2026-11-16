@@ -69,19 +69,12 @@ _weaviate_resources: "WeaviateRunResources | None" = None
 
 
 def load_pylate() -> tuple[Any, Any]:
-    """Load the optional ColBERT backend, with installation guidance if absent."""
-    try:
-        from pylate import models, rank
-    except ModuleNotFoundError as error:
-        if error.name != "pylate":
-            raise
-        raise ImportError(
-            "ColBERT models require the optional PyLate backend. Run "
-            "`uv sync --no-group embeddings --group colbert`, then "
-            "`uv run --no-group embeddings --group colbert generate_evals.py`. "
-            "This profile uses Sentence Transformers 5.3.x instead of 6.x."
-        ) from error
-    return models, rank
+    """Reject ColBERT until PyLate supports patched dependencies."""
+    raise ImportError(
+        "ColBERT is temporarily unavailable because PyLate pins vulnerable dependencies. "
+        "Remove embeddings.colbert from the configuration and use Hugging Face or "
+        "OpenRouter embedding models."
+    )
 
 
 @dataclass(frozen=True)
@@ -412,7 +405,11 @@ def main() -> int:
     model_configs = parse_model_configs(config)
     pylate_models = pylate_rank = None
     if any(model_config.get("is_colbert", False) for model_config in model_configs):
-        pylate_models, pylate_rank = load_pylate()
+        try:
+            pylate_models, pylate_rank = load_pylate()
+        except ImportError as error:
+            console.print(f"[red]{error}[/red]")
+            return 1
 
     # Setup embeddings directory
     embeddings_dir = Path(
