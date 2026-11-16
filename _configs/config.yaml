@@ -98,20 +98,7 @@ embeddings:
       query_prompt_name: query
       passage_prompt_name: document
 
-  # ColBERT late-interaction models (use pylate for multi-vector embeddings + MaxSim scoring)
-  # Requires: uv run --no-group embeddings --group colbert generate_evals.py
-  # This optional profile uses Sentence Transformers 5.3.x instead of the default 6.x.
-  # These models produce token-level embeddings and use late interaction for scoring.
-  # Hybrid search combines ColBERT MaxSim scores with Weaviate BM25 using alpha weighting.
-  # See: https://github.com/lightonai/pylate
-  # MaxSim scores every query/document pair; only BM25 candidates in the
-  # mixed-alpha path are bounded by search.bm25_candidate_limit.
-  # See README.md for measurement and interpretation limits.
-  # colbert:
-  #   mxbai-edge-colbert-17m: mixedbread-ai/mxbai-edge-colbert-v0-17m
-  #   mxbai-edge-colbert-32m: mixedbread-ai/mxbai-edge-colbert-v0-32m
-  #   answerai-colbert-small: answerdotai/answerai-colbert-small-v1
-  #   GTE-ModernColBERT: lightonai/GTE-ModernColBERT-v1
+  # ColBERT is temporarily unavailable because PyLate pins vulnerable dependencies.
 
   # openrouter:
   #   models:

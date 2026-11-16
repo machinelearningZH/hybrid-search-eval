@@ -208,7 +208,6 @@ __marimo__/
 
 # App specific ignores
 .DS_Store
-.github/
 _cache_embeddings/
 _cache_evals/
 /_results

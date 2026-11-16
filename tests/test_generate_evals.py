@@ -4,6 +4,7 @@ import signal
 import sys
 from contextlib import nullcontext
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -260,27 +261,32 @@ def test_importing_generate_evals_does_not_require_pylate(
     monkeypatch.setattr(builtins, "__import__", without_pylate)
     module = importlib.reload(sys.modules["generate_evals"])
 
-    with pytest.raises(ImportError, match="--no-group embeddings --group colbert"):
+    with pytest.raises(ImportError, match="temporarily unavailable"):
         module.load_pylate()
 
 
-def test_load_pylate_returns_backend_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_pylate_rejects_even_an_installed_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     backend = SimpleNamespace(models=object(), rank=object())
     monkeypatch.setitem(sys.modules, "pylate", backend)
 
-    assert generate_evals.load_pylate() == (backend.models, backend.rank)
-
-
-def test_load_pylate_preserves_missing_transitive_dependency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original_import = builtins.__import__
-
-    def broken_pylate(name: str, *args: object, **kwargs: object) -> object:
-        if name == "pylate":
-            raise ModuleNotFoundError("No module named 'other'", name="other")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", broken_pylate)
-    with pytest.raises(ModuleNotFoundError, match="other"):
+    with pytest.raises(ImportError, match="vulnerable dependencies"):
         generate_evals.load_pylate()
+
+
+def test_colbert_configuration_exits_before_loading_data(
+    monkeypatch: pytest.MonkeyPatch,
+    valid_config: dict[str, Any],
+) -> None:
+    valid_config["embeddings"] = {"colbert": {"test": "test/model"}}
+    monkeypatch.setattr(sys, "argv", ["generate_evals.py"])
+    monkeypatch.setattr(generate_evals, "load_config", lambda _path: valid_config)
+    monkeypatch.setattr(generate_evals, "validate_config", lambda *_args: [])
+    monkeypatch.setattr(generate_evals, "register_cleanup_handlers", lambda: None)
+    monkeypatch.setattr(
+        generate_evals,
+        "load_mteb_retrieval_data_from_dir",
+        lambda *_args: pytest.fail("unavailable ColBERT reached data loading"),
+    )
+    assert generate_evals.main() == 1
