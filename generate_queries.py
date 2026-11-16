@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -154,10 +155,11 @@ def generate_queries_for_document(
             content = response.choices[0].message.content
             if content is None:
                 return []
-            queries = [q.strip() for q in content.strip().split("\n") if q.strip()]
-
-            # Filter out any numbered lists (e.g., "1. query")
-            queries = [q.lstrip("0123456789.- ") for q in queries]
+            queries = [
+                re.sub(r"^(?:\d+[.)]|[-*])(?:\s+|$)", "", line.strip()).strip()
+                for line in content.splitlines()
+            ]
+            queries = [query for query in queries if query]
 
             return queries[:num_queries]  # Ensure we don't exceed requested number
 

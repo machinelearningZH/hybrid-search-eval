@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 import torch
 
+from _core import utils
 from _core.utils import (
     MTEBRetrievalData,
     calculate_hit,
@@ -20,6 +21,7 @@ from _core.utils import (
     eval_results_exist,
     generate_cache_key,
     generate_eval_cache_key,
+    get_openrouter_embeddings,
     load_colbert_embeddings,
     load_embeddings,
     load_eval_results,
@@ -33,6 +35,44 @@ from _core.utils import (
     select_pareto_quality_metric,
     validate_config,
 )
+
+
+def test_openrouter_embeddings_preserve_input_order_across_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batches: list[list[str]] = []
+
+    def post(_url: str, *, json: dict[str, Any], **_kwargs: Any) -> object:
+        batches.append(json["input"])
+        data = [
+            {"index": index, "embedding": [float(text)]}
+            for index, text in reversed(list(enumerate(json["input"])))
+        ]
+        return SimpleNamespace(
+            raise_for_status=lambda: None, json=lambda: {"data": data}
+        )
+
+    monkeypatch.setattr(utils.requests, "post", post)
+
+    embeddings = get_openrouter_embeddings(
+        ["1", "2", "3"], batch_size=2, api_key="test-key"
+    )
+
+    np.testing.assert_array_equal(embeddings, [[1.0], [2.0], [3.0]])
+    assert batches == [["1", "2"], ["3"]]
+
+
+def test_openrouter_embeddings_reject_incomplete_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {"data": [{"index": 0, "embedding": [1.0]}]},
+    )
+    monkeypatch.setattr(utils.requests, "post", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ValueError, match="embedding"):
+        get_openrouter_embeddings(["first", "second"], api_key="test-key")
 
 
 def test_parse_model_configs_preserves_provider_behavior_and_unique_names() -> None:

@@ -49,7 +49,7 @@ dev = [
 exclude-newer = "7 days"
 # Approved exception for EmbeddingGemma 2 support, first released in 5.19.0.
 # A fixed cutoff keeps later Transformers releases subject to review.
-exclude-newer-package = { transformers = "2026-10-07T00:00:00Z", }
+exclude-newer-package = { transformers = "2026-10-07T00:00:00Z" }
 default-groups = ["dev", "embeddings"]
 conflicts = [[{ group = "embeddings" }, { group = "colbert" }]]
 

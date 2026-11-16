@@ -2,9 +2,11 @@ import hashlib
 import json
 import math
 import os
+from html import escape
 from pathlib import Path
 from types import MethodType
 from typing import Any
+from zipfile import BadZipFile
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,6 +19,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 console = Console()
+_CACHE_VERSION = 2
 
 # Load environment variables
 load_dotenv()
@@ -400,6 +403,18 @@ def validate_config(
                                     errors.append(
                                         f"❌ 'embeddings.openrouter.settings.api_batch_size' must be positive, got {batch_size}"
                                     )
+                            for field in ("connect_timeout", "read_timeout"):
+                                timeout = settings.get(
+                                    field, 10.0 if field == "connect_timeout" else 120.0
+                                )
+                                if (
+                                    type(timeout) not in (int, float)
+                                    or not math.isfinite(timeout)
+                                    or timeout <= 0
+                                ):
+                                    errors.append(
+                                        f"❌ 'embeddings.openrouter.settings.{field}' must be a positive finite number"
+                                    )
 
     # Validate search section
     if "search" not in config:
@@ -699,8 +714,7 @@ class MTEBRetrievalData:
       If 'score' is missing, a default score of 1 is assumed (binary relevance).
 
     Every query must have at least one positive qrel row during validation.
-    Duplicate query/document pairs currently keep the last score when building
-    lookup dictionaries; this can remove an earlier positive judgment.
+    Duplicate query/document pairs are rejected after ID normalization.
 
     Attributes:
         corpus: DataFrame containing corpus documents
@@ -811,6 +825,11 @@ class MTEBRetrievalData:
                 count = int(null_mask.sum())
                 raise ValueError(f"qrels.{field} contains {count} null ID(s)")
             self.qrels[field] = self.qrels[field].map(self._normalize_id)
+
+        if self.qrels.duplicated(subset=["query-id", "corpus-id"]).any():
+            raise ValueError(
+                "qrels contains duplicate query/document pairs after string normalization"
+            )
 
         # Add default score of 1 if score column is missing (binary relevance)
         if "score" not in self.qrels.columns:
@@ -994,11 +1013,57 @@ def load_mteb_retrieval_data_from_dir(
     )
 
 
+def validate_embeddings(
+    embeddings: Any,
+    expected_count: int,
+    *,
+    is_colbert: bool = False,
+    expected_dimension: int | None = None,
+) -> int:
+    """Validate input alignment and finite numeric vectors; return vector dimension.
+
+    Dense embeddings must be a matrix; ColBERT inputs contain one token matrix
+    per input. All vectors must share a dimension, including an expected dimension
+    supplied by the corresponding document/query embeddings.
+
+    Raises:
+        ValueError: If counts, dimensions, dtypes, or values are incompatible.
+    """
+    if len(embeddings) != expected_count:
+        raise ValueError(
+            f"embedding count mismatch: expected {expected_count}, got {len(embeddings)}"
+        )
+    arrays = embeddings if is_colbert else [embeddings]
+    dimension = expected_dimension
+    for values in arrays:
+        try:
+            array = np.asarray(values)
+        except (TypeError, ValueError) as error:
+            raise ValueError("embeddings must contain numeric matrices") from error
+        if (
+            array.ndim != 2
+            or array.shape[1] == 0
+            or (is_colbert and array.shape[0] == 0)
+        ):
+            raise ValueError("embeddings must be nonempty two-dimensional matrices")
+        if array.dtype.kind not in "iuf" or not np.isfinite(array).all():
+            raise ValueError("embeddings must contain finite numeric values")
+        if dimension is None:
+            dimension = array.shape[1]
+        elif array.shape[1] != dimension:
+            raise ValueError(
+                f"embedding dimension mismatch: expected {dimension}, got {array.shape[1]}"
+            )
+    return dimension if dimension is not None else 0
+
+
 def get_openrouter_embeddings(
     texts: list[str],
     model: str = "openai/text-embedding-3-small",
     batch_size: int = 100,
     api_key: str | None = None,
+    connect_timeout: float = 10.0,
+    read_timeout: float = 120.0,
 ) -> np.ndarray:
     """
     Generate embeddings using OpenRouter API.
@@ -1008,10 +1073,21 @@ def get_openrouter_embeddings(
         model: OpenRouter embedding model name (e.g., "openai/text-embedding-3-small")
         batch_size: Number of texts to process in each API call
         api_key: OpenRouter API key (if None, will use OPENROUTER_API_KEY env var)
+        connect_timeout: Maximum seconds to establish a connection.
+        read_timeout: Maximum seconds to wait for response data.
 
     Returns:
         NumPy array of embeddings
     """
+    if type(batch_size) is not int or batch_size <= 0:
+        raise ValueError("embedding batch_size must be a positive integer")
+    for timeout in (connect_timeout, read_timeout):
+        if (
+            type(timeout) not in (int, float)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError("embedding timeouts must be positive finite numbers")
     if api_key is None:
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
@@ -1033,13 +1109,40 @@ def get_openrouter_embeddings(
             "input": batch,
             "model": model,
         }
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(
+            url, headers=headers, json=payload, timeout=(connect_timeout, read_timeout)
+        )
         response.raise_for_status()
         data = response.json()
-        batch_embeddings = [item["embedding"] for item in data["data"]]
+        items = data.get("data") if isinstance(data, dict) else None
+        if (
+            not isinstance(items, list)
+            or len(items) != len(batch)
+            or any(
+                not isinstance(item, dict)
+                or type(item.get("index")) is not int
+                or "embedding" not in item
+                for item in items
+            )
+            or sorted(item["index"] for item in items) != list(range(len(batch)))
+        ):
+            raise ValueError(
+                "embedding response must contain exactly one indexed vector per input"
+            )
+        batch_embeddings = [
+            item["embedding"] for item in sorted(items, key=lambda item: item["index"])
+        ]
+        validate_embeddings(
+            batch_embeddings,
+            len(batch),
+            expected_dimension=len(all_embeddings[0]) if all_embeddings else None,
+        )
         all_embeddings.extend(batch_embeddings)
 
-    return np.array(all_embeddings, dtype=np.float32)
+    embeddings = np.array(all_embeddings, dtype=np.float32)
+    if texts:
+        validate_embeddings(embeddings, len(texts))
+    return embeddings
 
 
 def parse_model_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1340,15 +1443,73 @@ def repair_snowflake_buffers(model: Any, model_id: str) -> bool:
     return repaired
 
 
+def _cache_fingerprint(value: Any) -> str:
+    """Hash canonical JSON without relying on ambiguous string concatenation."""
+    serialized = json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def generate_dataset_cache_identity(
+    data: MTEBRetrievalData,
+    max_document_tokens: int,
+    bm25_candidate_limit: int | None,
+) -> dict[str, Any]:
+    """Identify ordered inputs, canonical judgments, and retrieval preprocessing."""
+    return {
+        "documents": _cache_fingerprint(data.corpus[["id", "text"]].values.tolist()),
+        "queries": _cache_fingerprint(data.queries[["id", "text"]].values.tolist()),
+        "qrels": _cache_fingerprint(
+            sorted(
+                (query_id, corpus_id, float(score))
+                for query_id, corpus_id, score in data.qrels[
+                    ["query-id", "corpus-id", "score"]
+                ].itertuples(index=False, name=None)
+            )
+        ),
+        "max_document_tokens": max_document_tokens,
+        "bm25_candidate_limit": bm25_candidate_limit,
+    }
+
+
+def _load_cache_payload(path: Path, cache_key: str) -> dict[str, Any]:
+    """Reject legacy, partial, or renamed cache metadata."""
+    with path.open() as file:
+        envelope = json.load(file)
+    if (
+        not isinstance(envelope, dict)
+        or envelope.get("version") != _CACHE_VERSION
+        or envelope.get("cache_key") != cache_key
+        or not isinstance(envelope.get("payload"), dict)
+    ):
+        raise ValueError("Incompatible cache metadata")
+    return envelope["payload"]
+
+
+def _save_cache_payload(path: Path, cache_key: str, payload: dict[str, Any]) -> None:
+    with path.open("w") as file:
+        json.dump(
+            {"version": _CACHE_VERSION, "cache_key": cache_key, "payload": payload},
+            file,
+            indent=2,
+        )
+
+
+def _validate_cache_metadata(
+    metadata: dict[str, Any], expected_metadata: dict[str, Any] | None
+) -> None:
+    if expected_metadata and any(
+        metadata.get(key) != value for key, value in expected_metadata.items()
+    ):
+        raise ValueError("Cache metadata does not match the current dataset")
+
+
 def generate_cache_key(
     project_id: str,
     model_name: str,
     data_type: str,
     cache_identity: dict[str, Any] | None = None,
 ) -> str:
-    """Generate a deterministic key from model and preprocessing settings.
-
-    Dataset contents, row order, truncation, and model revision are not hashed.
+    """Generate a versioned key from model, data, and preprocessing identity.
 
     Args:
         project_id: The project identifier
@@ -1360,12 +1521,9 @@ def generate_cache_key(
     Returns:
         A hash-based cache key
     """
-    # Create a deterministic key based on project_id, model, and data type
-    key_string = f"{project_id}_{model_name}_{data_type}"
-    if cache_identity:
-        key_string += f"_{json.dumps(cache_identity, sort_keys=True)}"
-    # Use hash for cleaner filenames
-    hash_suffix = hashlib.md5(key_string.encode()).hexdigest()[:8]
+    hash_suffix = _cache_fingerprint(
+        [_CACHE_VERSION, project_id, model_name, data_type, cache_identity or {}]
+    )[:32]
     # Use model short name for readability
     model_short = model_name.split("/")[-1]
     return f"{project_id}_{model_short}_{data_type}_{hash_suffix}"
@@ -1394,23 +1552,28 @@ def save_embeddings(
     embeddings_file = embeddings_dir / f"{cache_key}.npy"
     np.save(embeddings_file, embeddings)
 
-    # Save metadata as JSON
-    if metadata:
-        metadata_file = embeddings_dir / f"{cache_key}.json"
-        with open(metadata_file, "w") as f:
-            json.dump(metadata, f, indent=2)
+    metadata_file = embeddings_dir / f"{cache_key}.json"
+    _save_cache_payload(metadata_file, cache_key, metadata or {})
 
     return embeddings_file
 
 
 def load_embeddings(
-    cache_key: str, embeddings_dir: Path
+    cache_key: str,
+    embeddings_dir: Path,
+    *,
+    expected_count: int | None = None,
+    expected_metadata: dict[str, Any] | None = None,
+    expected_dimension: int | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Load embeddings and metadata from disk.
 
     Args:
         cache_key: Unique identifier for this embedding set
         embeddings_dir: Directory where embeddings are stored
+        expected_count: Required input count, if supplied
+        expected_metadata: Metadata fields that must match the current run
+        expected_dimension: Required vector dimension, if supplied
 
     Returns:
         Tuple of (embeddings array, metadata dict)
@@ -1421,28 +1584,49 @@ def load_embeddings(
     if not embeddings_file.exists():
         raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
 
-    embeddings = np.load(embeddings_file)
-
-    metadata = {}
-    if metadata_file.exists():
-        with open(metadata_file, "r") as f:
-            metadata = json.load(f)
+    embeddings = np.load(embeddings_file, allow_pickle=False)
+    validate_embeddings(
+        embeddings,
+        len(embeddings) if expected_count is None else expected_count,
+        expected_dimension=expected_dimension,
+    )
+    metadata = _load_cache_payload(metadata_file, cache_key)
+    _validate_cache_metadata(metadata, expected_metadata)
 
     return embeddings, metadata
 
 
-def embeddings_exist(cache_key: str, embeddings_dir: Path) -> bool:
-    """Check if cached embeddings exist.
+def embeddings_exist(
+    cache_key: str,
+    embeddings_dir: Path,
+    *,
+    expected_count: int | None = None,
+    expected_metadata: dict[str, Any] | None = None,
+    expected_dimension: int | None = None,
+) -> bool:
+    """Check whether a valid, compatible dense embedding cache exists.
 
     Args:
         cache_key: Unique identifier for this embedding set
         embeddings_dir: Directory where embeddings are stored
+        expected_count: Required input count, if supplied
+        expected_metadata: Metadata fields that must match the current run
+        expected_dimension: Required vector dimension, if supplied
 
     Returns:
         True if embeddings exist, False otherwise
     """
-    embeddings_file = embeddings_dir / f"{cache_key}.npy"
-    return embeddings_file.exists()
+    try:
+        load_embeddings(
+            cache_key,
+            embeddings_dir,
+            expected_count=expected_count,
+            expected_metadata=expected_metadata,
+            expected_dimension=expected_dimension,
+        )
+    except (OSError, ValueError, TypeError, KeyError, EOFError, BadZipFile):
+        return False
+    return True
 
 
 def save_colbert_embeddings(
@@ -1475,24 +1659,30 @@ def save_colbert_embeddings(
         _count=np.array([len(embeddings)]),
     )
 
-    # Save metadata as JSON
-    if metadata:
-        metadata["is_colbert"] = True
-        metadata_file = embeddings_dir / f"{cache_key}_colbert.json"
-        with open(metadata_file, "w") as f:
-            json.dump(metadata, f, indent=2)
+    metadata_file = embeddings_dir / f"{cache_key}_colbert.json"
+    _save_cache_payload(
+        metadata_file, cache_key, {**(metadata or {}), "is_colbert": True}
+    )
 
     return embeddings_file
 
 
 def load_colbert_embeddings(
-    cache_key: str, embeddings_dir: Path
+    cache_key: str,
+    embeddings_dir: Path,
+    *,
+    expected_count: int | None = None,
+    expected_metadata: dict[str, Any] | None = None,
+    expected_dimension: int | None = None,
 ) -> tuple[list[np.ndarray], dict[str, Any]]:
     """Load ColBERT multi-vector embeddings and metadata from disk.
 
     Args:
         cache_key: Unique identifier for this embedding set
         embeddings_dir: Directory where embeddings are stored
+        expected_count: Required input count, if supplied
+        expected_metadata: Metadata fields that must match the current run
+        expected_dimension: Required vector dimension, if supplied
 
     Returns:
         Tuple of (list of embedding arrays, metadata dict)
@@ -1503,31 +1693,60 @@ def load_colbert_embeddings(
     if not embeddings_file.exists():
         raise FileNotFoundError(f"ColBERT embeddings file not found: {embeddings_file}")
 
-    # Load embeddings from npz
-    data = np.load(embeddings_file, allow_pickle=True)
-    count = int(data["_count"][0])
-    embeddings = [data[f"emb_{i}"] for i in range(count)]
-
-    metadata = {}
-    if metadata_file.exists():
-        with open(metadata_file, "r") as f:
-            metadata = json.load(f)
+    with np.load(embeddings_file, allow_pickle=False) as archive:
+        count_array = archive["_count"]
+        if (
+            count_array.shape != (1,)
+            or count_array.dtype.kind not in "iu"
+            or count_array[0] < 0
+            or int(count_array[0]) != len(archive.files) - 1
+        ):
+            raise ValueError("Invalid ColBERT embedding archive count")
+        count = int(count_array[0])
+        embeddings = [archive[f"emb_{i}"] for i in range(count)]
+    validate_embeddings(
+        embeddings,
+        count if expected_count is None else expected_count,
+        is_colbert=True,
+        expected_dimension=expected_dimension,
+    )
+    metadata = _load_cache_payload(metadata_file, cache_key)
+    _validate_cache_metadata(metadata, expected_metadata)
 
     return embeddings, metadata
 
 
-def colbert_embeddings_exist(cache_key: str, embeddings_dir: Path) -> bool:
-    """Check if cached ColBERT embeddings exist.
+def colbert_embeddings_exist(
+    cache_key: str,
+    embeddings_dir: Path,
+    *,
+    expected_count: int | None = None,
+    expected_metadata: dict[str, Any] | None = None,
+    expected_dimension: int | None = None,
+) -> bool:
+    """Check whether a valid, compatible ColBERT embedding cache exists.
 
     Args:
         cache_key: Unique identifier for this embedding set
         embeddings_dir: Directory where embeddings are stored
+        expected_count: Required input count, if supplied
+        expected_metadata: Metadata fields that must match the current run
+        expected_dimension: Required vector dimension, if supplied
 
     Returns:
         True if ColBERT embeddings exist, False otherwise
     """
-    embeddings_file = embeddings_dir / f"{cache_key}_colbert.npz"
-    return embeddings_file.exists()
+    try:
+        load_colbert_embeddings(
+            cache_key,
+            embeddings_dir,
+            expected_count=expected_count,
+            expected_metadata=expected_metadata,
+            expected_dimension=expected_dimension,
+        )
+    except (OSError, ValueError, TypeError, KeyError, EOFError, BadZipFile):
+        return False
+    return True
 
 
 def generate_eval_cache_key(
@@ -1539,9 +1758,7 @@ def generate_eval_cache_key(
     metric_k_values: dict[str, list[int]] | None = None,
     cache_identity: dict[str, Any] | None = None,
 ) -> str:
-    """Generate a deterministic key from selected evaluation settings.
-
-    Dataset contents and several runtime retrieval settings are not hashed.
+    """Generate a versioned key from evaluation settings and dataset identity.
 
     Args:
         project_id: The project identifier
@@ -1558,19 +1775,21 @@ def generate_eval_cache_key(
     Returns:
         A hash-based cache key
     """
-    # Include the evaluation parameters supplied to this helper.
-    # Include display_name in hash to disambiguate same model_id used via different providers
-    key_string = f"{project_id}_{model_id}_{display_name}_alpha{alpha}_k{k}"
-
-    # Include metric config in hash to invalidate cache when metrics change
-    if metric_k_values:
-        metrics_str = str(sorted((m, sorted(ks)) for m, ks in metric_k_values.items()))
-        key_string += f"_metrics{metrics_str}"
-    if cache_identity:
-        key_string += f"_identity{json.dumps(cache_identity, sort_keys=True)}"
-
-    # Use hash for cleaner filenames
-    hash_suffix = hashlib.md5(key_string.encode()).hexdigest()[:8]
+    hash_suffix = _cache_fingerprint(
+        [
+            _CACHE_VERSION,
+            project_id,
+            model_id,
+            display_name,
+            alpha,
+            k,
+            {
+                metric: sorted(cutoffs)
+                for metric, cutoffs in (metric_k_values or {}).items()
+            },
+            cache_identity or {},
+        ]
+    )[:32]
     # Use display name if provided, otherwise extract from model_id
     model_short = display_name if display_name else model_id.split("/")[-1]
     return f"{project_id}_{model_short}_a{alpha}_k{k}_{hash_suffix}"
@@ -1595,18 +1814,20 @@ def save_eval_results(
 
     # Save results as JSON
     results_file = evals_dir / f"{cache_key}.json"
-    with open(results_file, "w") as f:
-        json.dump(results, f, indent=2)
+    _save_cache_payload(results_file, cache_key, results)
 
     return results_file
 
 
-def load_eval_results(cache_key: str, evals_dir: Path) -> dict[str, Any]:
+def load_eval_results(
+    cache_key: str, evals_dir: Path, *, expected_metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Load evaluation results from disk.
 
     Args:
         cache_key: Unique identifier for this eval set
         evals_dir: Directory where eval results are stored
+        expected_metadata: Result fields that must match the current run
 
     Returns:
         Dictionary containing the evaluation results
@@ -1616,24 +1837,29 @@ def load_eval_results(cache_key: str, evals_dir: Path) -> dict[str, Any]:
     if not results_file.exists():
         raise FileNotFoundError(f"Eval results file not found: {results_file}")
 
-    with open(results_file, "r") as f:
-        results = json.load(f)
-
+    results = _load_cache_payload(results_file, cache_key)
+    _validate_cache_metadata(results, expected_metadata)
     return results
 
 
-def eval_results_exist(cache_key: str, evals_dir: Path) -> bool:
-    """Check if cached evaluation results exist.
+def eval_results_exist(
+    cache_key: str, evals_dir: Path, *, expected_metadata: dict[str, Any] | None = None
+) -> bool:
+    """Check whether a valid, compatible evaluation result cache exists.
 
     Args:
         cache_key: Unique identifier for this eval set
         evals_dir: Directory where eval results are stored
+        expected_metadata: Result fields that must match the current run
 
     Returns:
         True if eval results exist, False otherwise
     """
-    results_file = evals_dir / f"{cache_key}.json"
-    return results_file.exists()
+    try:
+        load_eval_results(cache_key, evals_dir, expected_metadata=expected_metadata)
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
 
 
 def calculate_reciprocal_rank(
@@ -2576,8 +2802,8 @@ def create_html_dashboard(
             else:
                 display_name = col.upper()
 
-            html += f'''<th class="px-4 py-3 text-left font-semibold text-gray-700" data-sort="{col}">
-                                {display_name} <span class="sort-arrow"></span>
+            html += f'''<th class="px-4 py-3 text-left font-semibold text-gray-700" data-sort="{escape(col)}">
+                                {escape(display_name)} <span class="sort-arrow"></span>
                             </th>
                             '''
         return html
@@ -2598,20 +2824,22 @@ def create_html_dashboard(
     html_template = template_path.read_text()
 
     # Prepare data for template
+    def _script_json(value: Any) -> str:
+        """Keep JSON strings from closing their enclosing HTML script element."""
+        return json.dumps(value, indent=2).replace("<", "\\u003c")
+
     initial_sort_column = metric_cols[0] if metric_cols else "model_short"
-    results_data_json = json.dumps(rows_data, indent=2)
-    metric_cols_json = json.dumps(metric_cols)
 
     # Format the template
     html_content = html_template.format(
-        project_id=project_id,
+        project_id=escape(str(project_id)),
         num_docs=num_docs,
         num_queries=num_queries,
-        formatted_timestamp=formatted_timestamp,
+        formatted_timestamp=escape(formatted_timestamp),
         metric_headers_html=metric_headers_html,
-        results_data_json=results_data_json,
-        metric_cols_json=metric_cols_json,
-        initial_sort_column=initial_sort_column,
+        results_data_json=_script_json(rows_data),
+        metric_cols_json=_script_json(metric_cols),
+        initial_sort_column_json=_script_json(initial_sort_column),
     )
 
     # Write the HTML file

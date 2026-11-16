@@ -35,6 +35,18 @@
   not trigger a connection to another server. `index_weaviate_documents` checks
   document/vector counts, batch errors, and the final indexed object count.
 
-## 2026-10-26: eMudhra/emSign certificate update
+## Review fixes — 2026-11-16
 
-Require certifi >=2026.10.19 and pip >=26.2.2. The prepared lockfile also updates other dependencies, including major versions of Pillow, Polars, and PyArrow. Keep the seven-day cooldown. Remove only the incident certifi exception after 2026-10-27 03:24:17 Europe/Zurich, then relock and sync. pip's separate cooldown exception can be removed after 2026-10-27 17:36:30 Europe/Zurich. Advisory: https://discuss.python.org/t/109576.
+- Cache identities now include dataset contents and evaluation settings. Legacy
+  or incompatible entries are recomputed without deleting files; unpinned model
+  revisions still require explicit recomputation after upstream changes.
+- Embeddings must preserve input counts and have consistent finite numeric
+  vectors before indexing or retrieval. OpenRouter response indexes restore
+  input order, and configurable connection/read timeouts bound stalled requests.
+- ColBERT caches use numeric arrays with pickle disabled. Dashboard text and
+  inline JSON use context-appropriate escaping; model names use DOM text APIs.
+- Duplicate normalized qrel pairs are rejected rather than aggregated. Existing
+  datasets containing duplicates must be cleaned by their owner.
+- Invalid evaluation configuration and embedded startup failure return status 1.
+  The existing policy of skipping failed models is unchanged; defining partial
+  and total model-failure statuses remains deferred in `PLAN.md`.

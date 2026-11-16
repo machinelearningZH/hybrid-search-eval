@@ -126,7 +126,7 @@
         const metricCols = {metric_cols_json};
 
         // State
-        let sortColumn = '{initial_sort_column}';
+        let sortColumn = {initial_sort_column_json};
         let sortDirection = 'desc';
         let filteredData = [...resultsData];
 
@@ -217,8 +217,8 @@
 
                 // Model name
                 html += `<td class="px-4 py-3">
-                    <div class="font-medium text-gray-900">${{row.model_short}}</div>
-                    <div class="text-xs text-gray-500 truncate max-w-xs" title="${{row.model}}">${{row.model}}</div>
+                    <div class="model-short font-medium text-gray-900"></div>
+                    <div class="model-id text-xs text-gray-500 truncate max-w-xs"></div>
                 </td>`;
 
                 // Alpha
@@ -267,6 +267,12 @@
             }});
 
             tbody.innerHTML = html;
+            filteredData.forEach((row, index) => {{
+                const modelCell = tbody.rows[index].querySelector('.model-id');
+                modelCell.textContent = row.model;
+                modelCell.title = row.model;
+                tbody.rows[index].querySelector('.model-short').textContent = row.model_short;
+            }});
 
             // Update sort indicators
             document.querySelectorAll('th[data-sort]').forEach(th => {{

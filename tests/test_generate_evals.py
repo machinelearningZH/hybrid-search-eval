@@ -143,6 +143,33 @@ def test_weaviate_cleanup_deletes_only_owned_collections_and_closes_client() -> 
     assert client.closed
 
 
+def test_weaviate_cleanup_continues_after_deletion_failure_and_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient({"unrelated"})
+    resources = WeaviateRunResources(client, run_id="cleanup")
+    failed_name = resources.create_collection("a").name
+    other_name = resources.create_collection("b").name
+    attempts: list[str] = []
+    delete = client.collections.delete
+
+    def fail_one_deletion(name: str) -> None:
+        attempts.append(name)
+        if name == failed_name:
+            raise OSError("server unavailable")
+        delete(name)
+
+    monkeypatch.setattr(client.collections, "delete", fail_one_deletion)
+
+    resources.cleanup()
+    resources.cleanup()
+
+    assert len(attempts) == 2
+    assert set(attempts) == {failed_name, other_name}
+    assert client.collections.names == {"unrelated", failed_name}
+    assert client.closed
+
+
 class FakeBatch:
     def __init__(self, number_errors: int):
         self.number_errors = number_errors
@@ -163,6 +190,17 @@ class FakeCollection:
             over_all=lambda total_count: SimpleNamespace(total_count=total_count_value)
         )
         total_count_value = total_count
+
+
+def test_index_weaviate_documents_rejects_vector_count_before_import() -> None:
+    collection = FakeCollection()
+
+    with pytest.raises(ValueError, match="embedding count mismatch.*expected 1.*got 0"):
+        index_weaviate_documents(
+            collection, [{"id": "d1", "text": "document"}], embeddings=[]
+        )
+
+    assert collection.dynamic_batch.added == []
 
 
 def test_index_weaviate_documents_rejects_batch_failures() -> None:

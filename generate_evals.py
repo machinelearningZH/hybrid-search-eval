@@ -10,8 +10,10 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any, cast
+from zipfile import BadZipFile
 
 import matplotlib.pyplot as plt
 import psutil
@@ -26,14 +28,13 @@ from weaviate.exceptions import WeaviateStartUpError
 from _core.utils import (
     calculate_hit,
     calculate_reciprocal_rank,
-    colbert_embeddings_exist,
     create_html_dashboard,
     create_memory_visualization,
     create_results_visualization,
     create_tradeoff_visualization,
-    embeddings_exist,
     eval_results_exist,
     generate_cache_key,
+    generate_dataset_cache_identity,
     generate_eval_cache_key,
     get_openrouter_embeddings,
     load_colbert_embeddings,
@@ -58,6 +59,7 @@ from _core.utils import (
     save_eval_results,
     truncate_text_to_tokens,
     validate_config,
+    validate_embeddings,
 )
 
 console = Console()
@@ -365,7 +367,7 @@ def compute_metrics(
     return results
 
 
-def main() -> None:
+def main() -> int:
     register_cleanup_handlers()
 
     # Parse command-line arguments
@@ -402,7 +404,7 @@ def main() -> None:
             f"📝 Please fix the errors in [yellow]{args.config}[/yellow] and run again.\n",
             style="bold",
         )
-        return
+        return 1
 
     console.print("   ✅ Configuration is valid", style="green")
     console.print(f"📋 Project ID: [yellow]{config['project_id']}[/yellow]")
@@ -438,7 +440,7 @@ def main() -> None:
     if not mteb_data_dir:
         console.print("\n❌ [bold red]No data source configured![/bold red]\n")
         console.print("   Please set 'data.mteb_data_dir' in your config file.\n")
-        return
+        return 1
 
     # Extract dataset identifier for cache keys (use directory name)
     dataset_id = Path(mteb_data_dir).name
@@ -463,6 +465,19 @@ def main() -> None:
         )
 
     queries = mteb_data.get_queries_list()
+    dataset_cache_identity = generate_dataset_cache_identity(
+        mteb_data,
+        max_document_tokens,
+        config.get("search", {}).get("bm25_candidate_limit", 1000),
+    )
+    result_cache_metadata = {
+        "num_documents": len(documents),
+        "num_queries": len(queries),
+    }
+    retrieval_cache_identity = {
+        "dataset": dataset_cache_identity,
+        "weaviate_client": version("weaviate-client"),
+    }
 
     console.print(f"   ✓ Loaded [green]{len(documents):,}[/green] documents")
     console.print(f"   ✓ Loaded [green]{len(queries):,}[/green] queries")
@@ -506,7 +521,7 @@ def main() -> None:
             "   Refusing to connect to an arbitrary server on occupied ports.",
             style="yellow",
         )
-        return
+        return 1
 
     resources = WeaviateRunResources(client)
     _weaviate_resources = resources
@@ -567,11 +582,12 @@ def main() -> None:
                 max_k,
                 model_short,
                 metric_k_values,
+                cache_identity=retrieval_cache_identity,
             )
 
             # Check if eval results already exist in cache
             if not args.force_recompute and eval_results_exist(
-                eval_cache_key, evals_dir
+                eval_cache_key, evals_dir, expected_metadata=result_cache_metadata
             ):
                 print_loading_cached("BM25 eval results")
                 cached_result = load_eval_results(eval_cache_key, evals_dir)
@@ -642,6 +658,35 @@ def main() -> None:
             cache_identity = model_config["cache_identity"]
             use_openrouter = model_config["is_openrouter"]
             is_colbert = model_config.get("is_colbert", False)
+            backend = (
+                "openrouter"
+                if use_openrouter
+                else "pylate"
+                if is_colbert
+                else "sentence-transformers"
+            )
+            backend_identity = {
+                "provider": backend,
+                "version": version("requests" if use_openrouter else backend),
+            }
+            passage_cache_identity = {
+                **passage_cache_identity,
+                "backend": backend_identity,
+                "documents": dataset_cache_identity["documents"],
+                "max_document_tokens": max_document_tokens,
+            }
+            query_cache_identity = {
+                **query_cache_identity,
+                "backend": backend_identity,
+                "queries": dataset_cache_identity["queries"],
+            }
+            cache_identity = {
+                **cache_identity,
+                **retrieval_cache_identity,
+                "backend": backend_identity,
+            }
+            document_cache_metadata = {"num_documents": len(documents)}
+            query_cache_metadata = {"num_queries": len(queries)}
 
             model_type_label = "ColBERT" if is_colbert else "Embedding"
             console.print(f"\n{'=' * 100}", style="bold blue")
@@ -692,20 +737,44 @@ def main() -> None:
                 cache_identity=query_cache_identity,
             )
 
-            # Check if all embeddings and evals are cached
-            # ColBERT models use different storage format
-            if is_colbert:
-                embeddings_cached = (
-                    not args.force_recompute
-                    and colbert_embeddings_exist(doc_cache_key, embeddings_dir)
-                    and colbert_embeddings_exist(query_cache_key, embeddings_dir)
-                )
-            else:
-                embeddings_cached = (
-                    not args.force_recompute
-                    and embeddings_exist(doc_cache_key, embeddings_dir)
-                    and embeddings_exist(query_cache_key, embeddings_dir)
-                )
+            load_cached_embeddings = (
+                load_colbert_embeddings if is_colbert else load_embeddings
+            )
+            cached_document_data = cached_query_data = None
+            if not args.force_recompute:
+                try:
+                    cached_document_data = load_cached_embeddings(
+                        doc_cache_key,
+                        embeddings_dir,
+                        expected_count=len(documents),
+                        expected_metadata=document_cache_metadata,
+                    )
+                except (OSError, ValueError, TypeError, KeyError, EOFError, BadZipFile):
+                    pass  # Invalid or legacy entries are cache misses.
+                if cached_document_data is not None:
+                    cached_dimension = validate_embeddings(
+                        cached_document_data[0], len(documents), is_colbert=is_colbert
+                    )
+                    try:
+                        cached_query_data = load_cached_embeddings(
+                            query_cache_key,
+                            embeddings_dir,
+                            expected_count=len(queries),
+                            expected_metadata=query_cache_metadata,
+                            expected_dimension=cached_dimension,
+                        )
+                    except (
+                        OSError,
+                        ValueError,
+                        TypeError,
+                        KeyError,
+                        EOFError,
+                        BadZipFile,
+                    ):
+                        pass
+            embeddings_cached = (
+                cached_document_data is not None and cached_query_data is not None
+            )
 
             # Check if all evals are cached
             # Get per-metric K values to determine max K for cache key
@@ -727,7 +796,11 @@ def main() -> None:
                         metric_k_values,
                         cache_identity=cache_identity,
                     )
-                    if not eval_results_exist(eval_cache_key, evals_dir):
+                    if not eval_results_exist(
+                        eval_cache_key,
+                        evals_dir,
+                        expected_metadata=result_cache_metadata,
+                    ):
                         all_evals_cached = False
                         break
 
@@ -739,12 +812,7 @@ def main() -> None:
                 )
 
                 # Load cached embeddings metadata for timing info
-                if is_colbert:
-                    _, doc_metadata = load_colbert_embeddings(
-                        doc_cache_key, embeddings_dir
-                    )
-                else:
-                    _, doc_metadata = load_embeddings(doc_cache_key, embeddings_dir)
+                _, doc_metadata = cached_document_data
                 total_embed_time_ms = doc_metadata.get("total_embed_time_ms", 0)
                 avg_embed_time_per_doc_ms = doc_metadata.get(
                     "avg_embed_time_per_doc_ms", 0
@@ -797,6 +865,13 @@ def main() -> None:
                     .get("settings", {})
                     .get("api_batch_size", 100)
                 )
+                openrouter_settings = config["embeddings"]["openrouter"].get(
+                    "settings", {}
+                )
+                openrouter_timeouts = {
+                    "connect_timeout": openrouter_settings.get("connect_timeout", 10.0),
+                    "read_timeout": openrouter_settings.get("read_timeout", 120.0),
+                }
                 # Get API cost warning threshold from config
                 api_cost_warning_threshold = (
                     config.get("embeddings", {})
@@ -1014,22 +1089,10 @@ def main() -> None:
 
             # Check if document embeddings exist in cache
             # ColBERT uses different storage format
-            doc_embeddings_cached = (
-                colbert_embeddings_exist(doc_cache_key, embeddings_dir)
-                if is_colbert
-                else embeddings_exist(doc_cache_key, embeddings_dir)
-            )
-
-            if not args.force_recompute and doc_embeddings_cached:
+            if cached_document_data is not None:
                 print_loading_cached("document embeddings")
-                if is_colbert:
-                    document_embeddings, doc_metadata = load_colbert_embeddings(
-                        doc_cache_key, embeddings_dir
-                    )
-                else:
-                    document_embeddings, doc_metadata = load_embeddings(
-                        doc_cache_key, embeddings_dir
-                    )
+                document_embeddings, doc_metadata = cached_document_data
+                embedding_dimension = cached_dimension
                 total_embed_time_ms = doc_metadata.get("total_embed_time_ms", 0)
                 avg_embed_time_per_doc_ms = doc_metadata.get(
                     "avg_embed_time_per_doc_ms", 0
@@ -1073,6 +1136,7 @@ def main() -> None:
                             document_texts,
                             model=model_id,
                             batch_size=openrouter_batch_size,
+                            **openrouter_timeouts,
                         )
                     elif is_colbert:
                         # Use ColBERT model (returns list of 2D arrays)
@@ -1096,6 +1160,9 @@ def main() -> None:
                             convert_to_numpy=True,
                             **passage_encode_kwargs,  # Pass model-specific encode parameters
                         )
+                    embedding_dimension = validate_embeddings(
+                        document_embeddings, len(documents), is_colbert=is_colbert
+                    )
                 except Exception as e:  # noqa: BLE001 - isolate backend failures to this model
                     error_type = type(e).__name__
                     error_msg = str(e)
@@ -1151,21 +1218,26 @@ def main() -> None:
                     metadata=doc_metadata,
                 )
 
+            if cached_query_data is None and not args.force_recompute:
+                try:
+                    cached_query_data = load_cached_embeddings(
+                        query_cache_key,
+                        embeddings_dir,
+                        expected_count=len(queries),
+                        expected_metadata=query_cache_metadata,
+                        expected_dimension=embedding_dimension,
+                    )
+                except (OSError, ValueError, TypeError, KeyError, EOFError, BadZipFile):
+                    pass
+
             # ColBERT models use direct MaxSim scoring, skip Weaviate indexing
             if is_colbert:
                 # For ColBERT, we need to generate query embeddings and use pylate.rank.rerank
                 query_texts = [q["query"] for q in queries]
 
-                # Check if query embeddings exist in cache
-                query_embeddings_cached = colbert_embeddings_exist(
-                    query_cache_key, embeddings_dir
-                )
-
-                if not args.force_recompute and query_embeddings_cached:
+                if cached_query_data is not None:
                     print_loading_cached("query embeddings")
-                    query_embeddings, query_metadata = load_colbert_embeddings(
-                        query_cache_key, embeddings_dir
-                    )
+                    query_embeddings, query_metadata = cached_query_data
                     print_loaded_cached("query embeddings", len(query_embeddings))
                     # Query embeddings loaded from cache, no need to save
                     pending_query_embeddings = None
@@ -1179,6 +1251,12 @@ def main() -> None:
                             batch_size=batch_size,
                             is_query=True,  # Encoding queries
                             show_progress_bar=True,
+                        )
+                        validate_embeddings(
+                            query_embeddings,
+                            len(queries),
+                            is_colbert=True,
+                            expected_dimension=embedding_dimension,
                         )
                     except Exception as e:  # noqa: BLE001 - isolate third-party ColBERT encoding failures
                         error_type = type(e).__name__
@@ -1271,7 +1349,9 @@ def main() -> None:
 
                     # Check if eval results already exist in cache
                     if not args.force_recompute and eval_results_exist(
-                        eval_cache_key, evals_dir
+                        eval_cache_key,
+                        evals_dir,
+                        expected_metadata=result_cache_metadata,
                     ):
                         print_loading_cached(f"eval results for alpha={alpha}")
                         cached_result = load_eval_results(eval_cache_key, evals_dir)
@@ -1458,13 +1538,9 @@ def main() -> None:
             else:
                 query_texts_prefixed = query_texts
 
-            if not args.force_recompute and embeddings_exist(
-                query_cache_key, embeddings_dir
-            ):
+            if cached_query_data is not None:
                 print_loading_cached("query embeddings")
-                query_embeddings, query_metadata = load_embeddings(
-                    query_cache_key, embeddings_dir
-                )
+                query_embeddings, query_metadata = cached_query_data
                 print_loaded_cached("query embeddings", len(query_embeddings))
                 # Query embeddings loaded from cache, no need to save
                 pending_query_embeddings = None
@@ -1478,6 +1554,7 @@ def main() -> None:
                             query_texts_prefixed,
                             model=model_id,
                             batch_size=openrouter_batch_size,
+                            **openrouter_timeouts,
                         )
                     else:
                         # Use SentenceTransformer
@@ -1492,6 +1569,11 @@ def main() -> None:
                             convert_to_numpy=True,
                             **query_encode_kwargs,  # Pass model-specific encode parameters
                         )
+                    validate_embeddings(
+                        query_embeddings,
+                        len(queries),
+                        expected_dimension=embedding_dimension,
+                    )
                 except Exception as e:  # noqa: BLE001 - isolate backend failures and clean its collection
                     error_type = type(e).__name__
                     error_msg = str(e)
@@ -1551,7 +1633,7 @@ def main() -> None:
 
                 # Check if eval results already exist in cache
                 if not args.force_recompute and eval_results_exist(
-                    eval_cache_key, evals_dir
+                    eval_cache_key, evals_dir, expected_metadata=result_cache_metadata
                 ):
                     print_loading_cached(f"eval results for alpha={alpha}")
                     cached_result = load_eval_results(eval_cache_key, evals_dir)
@@ -1568,7 +1650,9 @@ def main() -> None:
                 all_retrieved_ids = []
 
                 # Evaluate on all queries (using pre-computed embeddings)
-                for query_data, query_embedding in zip(queries, query_embeddings):
+                for query_data, query_embedding in zip(
+                    queries, query_embeddings, strict=True
+                ):
                     query_text = query_data["query"]
                     relevant_ids = query_data["relevant_ids"]
 
@@ -1690,7 +1774,8 @@ def main() -> None:
         cleanup_weaviate()
 
     console.print(Panel("✅ Evaluation complete!", style="bold green"))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

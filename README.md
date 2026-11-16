@@ -69,8 +69,17 @@ some lint issues require manual fixes. Use `make lint` to check remaining issues
 
 ## Quick start
 
-The repository includes a small MTEB-format example dataset. Review
-[`_configs/config.yaml`](_configs/config.yaml), then run:
+The repository includes a small MTEB-format example dataset in `_data/mteb_user`.
+Set `data.mteb_data_dir` in [`_configs/config.yaml`](_configs/config.yaml) to that
+path before running the example. The current configuration selects
+`_data/mteb/NanoBEIR-de`, which is not included in a fresh checkout.
+
+```yaml
+data:
+  mteb_data_dir: "./_data/mteb_user"
+```
+
+Then run:
 
 ```bash
 uv run generate_evals.py
@@ -193,8 +202,8 @@ Set `data.mteb_data_dir` to a directory containing these files:
 Tables must be nonempty. Corpus/query IDs must be unique after string
 normalization, text must contain strings, qrels must reference existing IDs,
 and every query must have a positive judgment. Scores must be finite numbers;
-only `score > 0` counts as relevant. Avoid duplicate query/document judgment
-pairs: the current loader keeps the last score for each pair.
+only `score > 0` counts as relevant. Duplicate query/document judgment pairs
+are rejected after ID normalization; clean duplicate rows before evaluation.
 
 ## Models and search modes
 
@@ -211,6 +220,9 @@ the local tests do not download models or verify provider availability.
 - Configure OpenRouter models under `embeddings.openrouter.models`; they require
   `OPENROUTER_API_KEY` in `.env`. See the
   [available embedding models](https://openrouter.ai/models?fmt=cards&output_modalities=embeddings).
+  `embeddings.openrouter.settings.connect_timeout` and `read_timeout` set positive,
+  finite timeouts in seconds (defaults: 10 and 120). Invalid or incomplete
+  embedding responses fail that model's evaluation.
 - Configure ColBERT models under `embeddings.colbert`. They use token-level
   MaxSim scores; mixed alpha values combine those scores with BM25.
 
@@ -223,8 +235,7 @@ the local tests do not download models or verify provider availability.
 > [!CAUTION]
 > Local Sentence Transformers and ColBERT models use `trust_remote_code=True` to
 > support custom architectures. Evaluate the trustworthiness of every model
-> repository before using it. Use only trusted embedding caches: the current
-> ColBERT loader permits pickled NumPy arrays.
+> repository before using it.
 
 ## Outputs and interpretation
 
@@ -232,7 +243,8 @@ Runs with results write a CSV, metric charts, and an interactive HTML dashboard.
 Embedding results also produce embedding-time and quality-versus-embedding-latency
 charts; a memory chart requires recorded memory data. The dashboard embeds its
 result data but loads Tailwind CSS from a CDN, so styled viewing needs network
-access.
+access. Project and model names are rendered as text, and embedded result JSON
+is escaped for the script context.
 
 - **MRR@K** averages the reciprocal rank of the first relevant result within K,
   using zero for misses.
@@ -261,17 +273,19 @@ rankings. In particular:
   retrieval stage. This does not measure production retrieval throughput. Its
   min-max score fusion differs from Weaviate hybrid fusion at the same alpha;
   `search.bm25_candidate_limit` affects only the ColBERT mixed-alpha path.
-- Cache keys do not include dataset contents, row order, truncation limits, model
-  revisions, or every retrieval setting. Recompute after any relevant change and
-  compare runs only when their inputs and environment match.
+- Cache identities include ordered dataset IDs/text, preprocessing settings, and
+  backend identity; result caches also include relevance judgments and retrieval
+  settings. Older or incompatible caches are recomputed without deleting their
+  files. Unpinned upstream model revisions can still change behind the same model
+  ID; use `--force-recompute` after such changes and compare matching environments.
 - Query generation saves final Parquet files but not raw responses, provider
   revisions, or a failure manifest. Preserve those separately when auditability
   matters. API failures can leave fewer queries than requested, and query IDs
-  follow worker completion order. The parser also strips leading digits and
-  punctuation, which can alter valid queries such as `3D printing`.
-- The evaluation CLI returns normally for some validation/startup failures and
-  can announce completion after skipping models or writing an empty CSV. Inspect
-  console errors and result rows; its exit status alone does not establish success.
+  follow worker completion order.
+- The evaluation CLI exits unsuccessfully for configuration validation or
+  embedded startup failures. Individual model failures can still be skipped,
+  including when all models fail. Inspect console errors and result rows to
+  establish completeness.
 
 ## Project structure
 

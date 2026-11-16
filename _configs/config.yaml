@@ -112,6 +112,8 @@ embeddings:
   #     bge-base-en: baai/bge-base-en-v1.5
   #   settings:
   #     api_batch_size: 100 # Number of texts to send per API call
+  #     connect_timeout: 10.0 # Seconds to establish an API connection
+  #     read_timeout: 120.0 # Seconds to wait for response data
   #     api_cost_warning_threshold: 5000 # Warn user if total samples (documents + queries) exceeds this number
 
   device: "mps" # "cpu" | "cuda" | "auto" | "mps"
