@@ -1,10 +1,10 @@
 import argparse
+import json
 import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import cast
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -68,6 +68,9 @@ def load_documents_from_file(file_path: Path) -> pd.DataFrame:
     if "id" not in df.columns:
         console.print("ℹ️  No 'id' column found, generating sequential IDs")
         df["id"] = [f"doc_{i}" for i in range(len(df))]
+
+    if df["id"].isna().any():
+        raise ValueError("Document IDs must be non-null")
 
     # Ensure id column is string type
     df["id"] = df["id"].astype(str)
@@ -258,7 +261,16 @@ def generate_all_queries(
     Returns:
         Tuple of (queries_df, qrels_df) in MTEB format
     """
-    all_queries: list[dict[str, str | int]] = []
+    if documents_df.empty:
+        raise ValueError("Documents must be nonempty")
+    if num_queries_per_doc <= 0:
+        raise ValueError("Queries per document must be positive")
+    if documents_df["id"].isna().any():
+        raise ValueError("Document IDs must be non-null")
+    document_ids = documents_df["id"].map(str).tolist()
+    if len(set(document_ids)) != len(document_ids):
+        raise ValueError("Document IDs must be unique after string normalization")
+    queries_by_document: list[list[str]] = [[] for _ in document_ids]
 
     with Progress(
         SpinnerColumn(),
@@ -279,9 +291,9 @@ def generate_all_queries(
             futures = {
                 executor.submit(
                     process_document_worker,
-                    cast(int, idx),
-                    row["id"],
-                    row["text"],
+                    idx,
+                    doc_id,
+                    text,
                     num_queries_per_doc,
                     api_key,
                     model,
@@ -290,23 +302,17 @@ def generate_all_queries(
                     temperature,
                     max_output_tokens,
                     base_url,
-                ): cast(int, idx)
-                for idx, row in documents_df.iterrows()
+                ): idx
+                for idx, (doc_id, text) in enumerate(
+                    zip(document_ids, documents_df["text"], strict=True)
+                )
             }
 
             # Process completed futures as they finish
             for future in as_completed(futures):
                 try:
-                    _, doc_id, queries = future.result()
-
-                    # Add queries with document ID
-                    for query in queries:
-                        all_queries.append(
-                            {
-                                "query_text": query,
-                                "doc_id": doc_id,
-                            }
-                        )
+                    _, _, queries = future.result()
+                    queries_by_document[futures[future]] = queries
 
                 except (APIError, OSError, ValueError) as e:
                     doc_idx = futures[future]
@@ -315,23 +321,29 @@ def generate_all_queries(
                 # Update progress
                 progress.update(task, advance=1)
 
+    all_queries = [
+        {"id": f"{doc_id}::query_{position}", "query_text": query, "doc_id": doc_id}
+        for doc_id, queries in zip(document_ids, queries_by_document, strict=True)
+        for position, query in enumerate(queries)
+    ]
+
     # Create MTEB format DataFrames
     queries_df = pd.DataFrame(
         {
-            "id": [f"query_{i}" for i in range(len(all_queries))],
+            "id": [q["id"] for q in all_queries],
             "text": [q["query_text"] for q in all_queries],
         }
     )
 
     qrels_df = pd.DataFrame(
         {
-            "query-id": [f"query_{i}" for i in range(len(all_queries))],
+            "query-id": [q["id"] for q in all_queries],
             "corpus-id": [q["doc_id"] for q in all_queries],
             "score": [1] * len(all_queries),  # Binary relevance
         }
     )
 
-    console.print(f"\n✅ Generated {len(queries_df)} total queries")
+    console.print(f"\nGenerated {len(queries_df)} total queries")
     console.print(
         f"   Average: {len(queries_df) / len(documents_df):.1f} queries per document"
     )
@@ -525,13 +537,46 @@ def main() -> int:
         console.print(f"❌ [red]Error generating queries: {e}[/red]")
         return 1
 
-    # Save MTEB dataset
-    save_mteb_dataset(
-        corpus_df=documents_df,
-        queries_df=queries_df,
-        qrels_df=qrels_df,
-        output_dir=args.output_dir,
-    )
+    counts = qrels_df["corpus-id"].value_counts()
+    incomplete_documents = [
+        {
+            "source_id": doc_id,
+            "requested_queries": args.num_queries,
+            "actual_queries": int(counts.get(doc_id, 0)),
+        }
+        for doc_id in documents_df["id"].map(str)
+        if counts.get(doc_id, 0) != args.num_queries
+    ]
+    status = "partial" if incomplete_documents else "complete"
+    if queries_df.empty:
+        status = "failed"
+    summary = {
+        "status": status,
+        "requested_queries": len(documents_df) * args.num_queries,
+        "actual_queries": len(queries_df),
+        "incomplete_documents": incomplete_documents,
+    }
+    try:
+        if not queries_df.empty:
+            save_mteb_dataset(
+                corpus_df=documents_df,
+                queries_df=queries_df,
+                qrels_df=qrels_df,
+                output_dir=args.output_dir,
+            )
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = args.output_dir / "generation_summary.json"
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    except (OSError, ValueError) as e:
+        console.print(f"❌ [red]Error saving generation output: {e}[/red]")
+        return 1
+
+    console.print(f"   Generation summary: {summary_path}")
+    if queries_df.empty:
+        console.print(
+            "❌ No queries generated; existing dataset files were left unchanged."
+        )
+        return 1
 
     # Show sample queries
     console.print("\n📋 Sample queries:")
@@ -541,6 +586,14 @@ def main() -> int:
         corpus_id = qrels_df.iloc[i]["corpus-id"]
         display_text = query_text[:60] + "..." if len(query_text) > 60 else query_text
         console.print(f"   • [cyan]{display_text}[/cyan] → {corpus_id}")
+
+    if incomplete_documents:
+        console.print(
+            f"\n⚠️  [yellow]Partial dataset saved: {len(queries_df)}/"
+            f"{summary['requested_queries']} queries; "
+            f"{len(incomplete_documents)} incomplete documents.[/yellow]"
+        )
+        return 1
 
     console.print(f"\n✅ [green]Done! MTEB dataset saved to {args.output_dir}[/green]")
     console.print("   You can now run evaluation with: uv run generate_evals.py")

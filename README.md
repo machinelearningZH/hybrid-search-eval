@@ -162,6 +162,14 @@ This reads all three input Parquet files and validates the existing dataset.
 It replaces the files in the output directory; it does not append to existing
 queries or qrels. The default output directory is `_data/mteb_user`.
 
+Generated queries follow source-document order and use IDs of the form
+`<source ID>::query_<zero-based position>`, independent of worker completion order.
+`generation_summary.json` records `complete`, `partial`, or `failed` status,
+requested and actual query counts, and source IDs/counts for incomplete documents.
+Only complete generation exits with status 0. Partial generation saves the
+available dataset and exits with status 1; zero generated queries leave existing
+Parquet files unchanged and write only the failed summary.
+
 ### Download an MTEB dataset
 
 ```bash
@@ -232,6 +240,9 @@ the local tests do not download models or verify provider availability.
 > afterward, and models may truncate again with their own tokenizers. Titles and
 > extra query fields are not used for retrieval.
 
+Lexical retrieval searches only `text`; document IDs do not participate in BM25
+matching.
+
 > [!CAUTION]
 > Local Sentence Transformers and ColBERT models use `trust_remote_code=True` to
 > support custom architectures. Evaluate the trustworthiness of every model
@@ -272,16 +283,18 @@ rankings. In particular:
 - ColBERT MaxSim is computed exhaustively across the corpus, without a candidate
   retrieval stage. This does not measure production retrieval throughput. Its
   min-max score fusion differs from Weaviate hybrid fusion at the same alpha;
-  `search.bm25_candidate_limit` affects only the ColBERT mixed-alpha path.
+  `search.bm25_candidate_limit` affects only the ColBERT mixed-alpha path. Each
+  score set is normalized separately; constant scores become 1, and missing
+  candidates contribute 0. Equal combined scores use ascending document ID order.
 - Cache identities include ordered dataset IDs/text, preprocessing settings, and
   backend identity; result caches also include relevance judgments and retrieval
   settings. Older or incompatible caches are recomputed without deleting their
   files. Unpinned upstream model revisions can still change behind the same model
   ID; use `--force-recompute` after such changes and compare matching environments.
 - Query generation saves final Parquet files but not raw responses, provider
-  revisions, or a failure manifest. Preserve those separately when auditability
-  matters. API failures can leave fewer queries than requested, and query IDs
-  follow worker completion order.
+  revisions, or generation parameters. Preserve those separately when
+  auditability matters. Incomplete output is identified in
+  `generation_summary.json` and returns a nonzero exit status.
 - The evaluation CLI exits unsuccessfully for configuration validation or
   embedded startup failures. Individual model failures can still be skipped,
   including when all models fail. Inspect console errors and result rows to

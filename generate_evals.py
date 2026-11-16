@@ -477,6 +477,7 @@ def main() -> int:
     retrieval_cache_identity = {
         "dataset": dataset_cache_identity,
         "weaviate_client": version("weaviate-client"),
+        "query_properties": ["text"],
     }
 
     console.print(f"   ✓ Loaded [green]{len(documents):,}[/green] documents")
@@ -607,6 +608,7 @@ def main() -> int:
                     # Perform pure lexical search (alpha=0.0) with max_k
                     response = collection.query.hybrid(
                         query=query_text,
+                        query_properties=["text"],
                         alpha=alpha,
                         limit=max_k,
                     )
@@ -685,6 +687,8 @@ def main() -> int:
                 **retrieval_cache_identity,
                 "backend": backend_identity,
             }
+            if is_colbert:
+                cache_identity["colbert_tie_break"] = "document_id_ascending"
             document_cache_metadata = {"num_documents": len(documents)}
             query_cache_metadata = {"num_queries": len(queries)}
 
@@ -695,10 +699,9 @@ def main() -> int:
             )
             console.print(f"{'=' * 100}", style="bold blue")
 
-            # ColBERT models only support pure semantic search (alpha=1.0)
             if is_colbert:
                 console.print(
-                    "   🔷 ColBERT late-interaction model - using MaxSim scoring (alpha=1.0 only)",
+                    "   🔷 ColBERT late-interaction model - using MaxSim with optional BM25 fusion",
                     style="cyan",
                 )
 
@@ -853,387 +856,708 @@ def main() -> int:
             memory_before_mb = get_memory_usage_mb()
             memory_after_model_mb = memory_before_mb  # Default for API models
 
-            if use_openrouter:
-                console.print(
-                    f"   Using OpenRouter API for model: [yellow]{model_id}[/yellow]",
-                    style="cyan",
-                )
-                # Get OpenRouter batch size from config
-                openrouter_batch_size = (
-                    config.get("embeddings", {})
-                    .get("openrouter", {})
-                    .get("settings", {})
-                    .get("api_batch_size", 100)
-                )
-                openrouter_settings = config["embeddings"]["openrouter"].get(
-                    "settings", {}
-                )
-                openrouter_timeouts = {
-                    "connect_timeout": openrouter_settings.get("connect_timeout", 10.0),
-                    "read_timeout": openrouter_settings.get("read_timeout", 120.0),
-                }
-                # Get API cost warning threshold from config
-                api_cost_warning_threshold = (
-                    config.get("embeddings", {})
-                    .get("openrouter", {})
-                    .get("settings", {})
-                    .get("api_cost_warning_threshold", 5000)
-                )
-
-                # Check if total samples exceed threshold and warn user
-                total_samples = len(documents) + len(queries)
-                if total_samples > api_cost_warning_threshold:
+            try:
+                if use_openrouter:
                     console.print(
-                        "\n⚠️  [bold yellow]WARNING: HIGH API USAGE DETECTED[/bold yellow]",
-                        style="bold",
-                    )
-                    console.print(
-                        f"   You are about to send [bold red]{total_samples:,}[/bold red] samples ([yellow]{len(documents):,}[/yellow] documents + [yellow]{len(queries):,}[/yellow] queries)",
-                    )
-                    console.print(
-                        f"   to the OpenRouter API for model [cyan]{model_id}[/cyan].",
-                    )
-                    console.print(
-                        f"   This exceeds the configured threshold of [yellow]{api_cost_warning_threshold:,}[/yellow] samples.",
-                    )
-                    console.print(
-                        "\n   [bold]This may result in substantial API costs![/bold]",
-                        style="red",
-                    )
-                    console.print(
-                        "   (You can adjust this threshold in config.yaml under embeddings.openrouter.settings.api_cost_warning_threshold)\n",
-                        style="dim",
-                    )
-
-                    user_input = (
-                        input("   Do you want to proceed? (yes/no): ").strip().lower()
-                    )
-                    if user_input not in ["yes", "y"]:
-                        console.print(
-                            f"\n   [yellow]Skipping model '{model_name}' and continuing with remaining models...[/yellow]\n"
-                        )
-                        continue
-                    console.print("   [green]Proceeding with API calls...[/green]\n")
-
-                # OpenRouter API doesn't load model locally, so no memory impact
-                model_memory_mb = 0.0
-            elif is_colbert:
-                # Load ColBERT model using pylate
-                console.print("   Loading ColBERT model...", style="cyan")
-                try:
-                    model = pylate_models.ColBERT(
-                        model_name_or_path=model_id,
-                        device=device,
-                        trust_remote_code=True,
-                    )
-                    memory_after_model_mb = get_memory_usage_mb()
-                    model_memory_mb = max(0.0, memory_after_model_mb - memory_before_mb)
-                    console.print(
-                        f"   ✓ ColBERT model loaded (memory: [yellow]{model_memory_mb:.1f} MB[/yellow])",
+                        f"   Using OpenRouter API for model: [yellow]{model_id}[/yellow]",
                         style="cyan",
                     )
-                except Exception as e:  # noqa: BLE001 - isolate third-party ColBERT model failures
-                    error_type = type(e).__name__
-                    error_msg = str(e)
-                    console.print(
-                        f"\n⚠️  [red bold]Error loading ColBERT model '{model_id}' ({error_type}):[/red bold]"
+                    # Get OpenRouter batch size from config
+                    openrouter_batch_size = (
+                        config.get("embeddings", {})
+                        .get("openrouter", {})
+                        .get("settings", {})
+                        .get("api_batch_size", 100)
                     )
-                    console.print(f"   [yellow]{error_msg[:500]}[/yellow]")
-                    console.print(
-                        f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
+                    openrouter_settings = config["embeddings"]["openrouter"].get(
+                        "settings", {}
                     )
-                    continue
-            else:
-                # Check if this is a minishlab model - they don't work with MPS
-                model_device = device
-                if "minishlab" in model_id.lower():
-                    model_device = "cpu"
-                    if device == "mps":
-                        console.print(
-                            "   ⚠️  [yellow]Minishlab models don't support MPS, using CPU instead[/yellow]",
-                            style="dim",
-                        )
-
-                # Build model loading kwargs
-                model_kwargs: dict[str, object] = {
-                    "device": model_device,
-                    "trust_remote_code": True,
-                }
-
-                # Check if this is a Snowflake model - they require xformers by default
-                # but we can disable memory efficient attention to avoid this dependency
-                if "snowflake" in model_id.lower():
-                    model_kwargs["config_kwargs"] = {
-                        "use_memory_efficient_attention": False
+                    openrouter_timeouts = {
+                        "connect_timeout": openrouter_settings.get(
+                            "connect_timeout", 10.0
+                        ),
+                        "read_timeout": openrouter_settings.get("read_timeout", 120.0),
                     }
-                    console.print(
-                        "   ⚠️  [yellow]Snowflake model: disabling xformers requirement[/yellow]",
-                        style="dim",
+                    # Get API cost warning threshold from config
+                    api_cost_warning_threshold = (
+                        config.get("embeddings", {})
+                        .get("openrouter", {})
+                        .get("settings", {})
+                        .get("api_cost_warning_threshold", 5000)
                     )
 
-                console.print("   Loading model...", style="cyan")
-                try:
-                    model = SentenceTransformer(model_id, **model_kwargs)
-                    if repair_snowflake_attention_mask(model, model_id):
+                    # Check if total samples exceed threshold and warn user
+                    total_samples = len(documents) + len(queries)
+                    if total_samples > api_cost_warning_threshold:
                         console.print(
-                            "   ⚠️  [yellow]Snowflake model: restored attention mask helper[/yellow]",
-                            style="dim",
-                        )
-                    if repair_snowflake_buffers(model, model_id):
-                        console.print(
-                            "   ⚠️  [yellow]Snowflake model: rebuilt position/rotary buffers[/yellow]",
-                            style="dim",
-                        )
-                    memory_after_model_mb = get_memory_usage_mb()
-                    model_memory_mb = max(0.0, memory_after_model_mb - memory_before_mb)
-                    console.print(
-                        f"   ✓ Model loaded (memory: [yellow]{model_memory_mb:.1f} MB[/yellow])",
-                        style="cyan",
-                    )
-                except FileNotFoundError as e:
-                    if "huggingface" in str(e) and "cache" in str(e):
-                        console.print(
-                            f"\n❌ [red]Error loading model {model_id}:[/red]",
+                            "\n⚠️  [bold yellow]WARNING: HIGH API USAGE DETECTED[/bold yellow]",
                             style="bold",
                         )
                         console.print(
-                            "   [yellow]HuggingFace cache is corrupted for this model.[/yellow]"
-                        )
-                        console.print("\n   To fix this, run:")
-                        console.print(
-                            f"   [cyan]rm -rf ~/.cache/huggingface/modules/transformers_modules/{model_id.replace('/', '/')}*[/cyan]"
+                            f"   You are about to send [bold red]{total_samples:,}[/bold red] samples ([yellow]{len(documents):,}[/yellow] documents + [yellow]{len(queries):,}[/yellow] queries)",
                         )
                         console.print(
-                            f"   [cyan]rm -rf ~/.cache/huggingface/hub/models--{model_id.replace('/', '--')}*[/cyan]"
-                        )
-                        console.print("\n   Then run the script again.\n")
-                        raise
-                    else:
-                        raise
-                except OSError as e:
-                    error_msg = str(e)
-                    console.print(
-                        f"\n⚠️  [red bold]Error loading model '{model_id}':[/red bold]"
-                    )
-                    if (
-                        "not a valid model identifier" in error_msg
-                        or "Repository Not Found" in error_msg
-                    ):
-                        console.print(
-                            "   [yellow]Model not found on HuggingFace Hub.[/yellow]"
+                            f"   to the OpenRouter API for model [cyan]{model_id}[/cyan].",
                         )
                         console.print(
-                            "   [dim]Please verify the model ID is correct and accessible.[/dim]"
+                            f"   This exceeds the configured threshold of [yellow]{api_cost_warning_threshold:,}[/yellow] samples.",
                         )
                         console.print(
-                            "   [dim]If this is a private/gated model, ensure you are logged in via 'huggingface-cli login'.[/dim]"
-                        )
-                    else:
-                        console.print(f"   [yellow]{error_msg}[/yellow]")
-                    console.print(
-                        f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
-                    )
-                    continue
-                except ValueError as e:
-                    error_msg = str(e)
-                    # Check for ColBERT model loaded as SentenceTransformer
-                    if "MaxSim" in error_msg and "SimilarityFunction" in error_msg:
-                        console.print(
-                            "\n❌ [bold red]ColBERT model misconfiguration detected![/bold red]"
+                            "\n   [bold]This may result in substantial API costs![/bold]",
+                            style="red",
                         )
                         console.print(
-                            f"   Model [cyan]'{model_id}'[/cyan] is a ColBERT late-interaction model."
+                            "   (You can adjust this threshold in config.yaml under embeddings.openrouter.settings.api_cost_warning_threshold)\n",
+                            style="dim",
+                        )
+
+                        user_input = (
+                            input("   Do you want to proceed? (yes/no): ")
+                            .strip()
+                            .lower()
+                        )
+                        if user_input not in ["yes", "y"]:
+                            console.print(
+                                f"\n   [yellow]Skipping model '{model_name}' and continuing with remaining models...[/yellow]\n"
+                            )
+                            continue
+                        console.print(
+                            "   [green]Proceeding with API calls...[/green]\n"
+                        )
+
+                    # OpenRouter API doesn't load model locally, so no memory impact
+                    model_memory_mb = 0.0
+                elif is_colbert:
+                    # Load ColBERT model using pylate
+                    console.print("   Loading ColBERT model...", style="cyan")
+                    try:
+                        model = pylate_models.ColBERT(
+                            model_name_or_path=model_id,
+                            device=device,
+                            trust_remote_code=True,
+                        )
+                        memory_after_model_mb = get_memory_usage_mb()
+                        model_memory_mb = max(
+                            0.0, memory_after_model_mb - memory_before_mb
                         )
                         console.print(
-                            "   It uses MaxSim scoring and cannot be loaded as a standard SentenceTransformer.\n"
+                            f"   ✓ ColBERT model loaded (memory: [yellow]{model_memory_mb:.1f} MB[/yellow])",
+                            style="cyan",
                         )
+                    except Exception as e:  # noqa: BLE001 - isolate third-party ColBERT model failures
+                        error_type = type(e).__name__
+                        error_msg = str(e)
                         console.print(
-                            "   [bold yellow]To fix this, move the model to the 'embeddings.colbert' section in your config.yaml:[/bold yellow]\n"
-                        )
-                        console.print(
-                            f"   [green]embeddings:\n     colbert:\n       {model_name}: {model_id}[/green]\n"
-                        )
-                        console.print(
-                            "   [dim]ColBERT models will then be loaded via PyLate with proper MaxSim support.[/dim]"
-                        )
-                    else:
-                        console.print(
-                            f"\n⚠️  [red bold]ValueError loading model '{model_id}':[/red bold]"
+                            f"\n⚠️  [red bold]Error loading ColBERT model '{model_id}' ({error_type}):[/red bold]"
                         )
                         console.print(f"   [yellow]{error_msg[:500]}[/yellow]")
-                    console.print(
-                        f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
-                    )
-                    continue
-                except Exception as e:  # noqa: BLE001 - custom model code can raise arbitrary errors
-                    # Catch any other unexpected errors during model loading
-                    error_type = type(e).__name__
-                    error_msg = str(e)
-                    console.print(
-                        f"\n⚠️  [red bold]Unexpected error loading model '{model_id}' ({error_type}):[/red bold]"
-                    )
-                    console.print(f"   [yellow]{error_msg[:500]}[/yellow]")
-                    console.print(
-                        f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
-                    )
-                    continue
-
-            document_texts = [d["text"] for d in documents]
-
-            # Apply passage prefix if configured for this model (not used for ColBERT)
-            if passage_prefix and not is_colbert:
-                document_texts = [passage_prefix + text for text in document_texts]
-
-            # Initialize memory tracking variables (may be updated below)
-            total_memory_mb = model_memory_mb if not use_openrouter else 0.0
-
-            # Check if document embeddings exist in cache
-            # ColBERT uses different storage format
-            if cached_document_data is not None:
-                print_loading_cached("document embeddings")
-                document_embeddings, doc_metadata = cached_document_data
-                embedding_dimension = cached_dimension
-                total_embed_time_ms = doc_metadata.get("total_embed_time_ms", 0)
-                avg_embed_time_per_doc_ms = doc_metadata.get(
-                    "avg_embed_time_per_doc_ms", 0
-                )
-                # Load cached memory data if available
-                if "peak_memory_mb" in doc_metadata:
-                    total_memory_mb = doc_metadata.get(
-                        "peak_memory_mb", model_memory_mb
-                    )
-                if "model_memory_mb" in doc_metadata:
-                    model_memory_mb = doc_metadata.get(
-                        "model_memory_mb", model_memory_mb
-                    )
-                # Store memory data for visualization (from cache)
-                if (
-                    "peak_memory_mb" in doc_metadata
-                    and "model_memory_mb" in doc_metadata
-                    and not use_openrouter
-                ):
-                    memory_data[model_name] = {
-                        "model_memory_mb": doc_metadata.get("model_memory_mb", 0.0),
-                        "peak_memory_mb": doc_metadata.get("peak_memory_mb", 0.0),
-                    }
-                print_loaded_cached(
-                    "document embeddings",
-                    len(document_embeddings),
-                    f"(originally: [yellow]{total_embed_time_ms:.1f}ms[/yellow], [dim]{avg_embed_time_per_doc_ms:.2f}ms per doc[/dim])",
-                )
-                # Document embeddings loaded from cache, no need to save
-                pending_doc_embeddings = None
-            else:
-                print_generating("documents", len(documents))
-
-                # Measure embedding time for documents (use perf_counter for higher precision)
-                start_time = time.perf_counter()
-
-                try:
-                    if use_openrouter:
-                        # Use OpenRouter API
-                        document_embeddings = get_openrouter_embeddings(
-                            document_texts,
-                            model=model_id,
-                            batch_size=openrouter_batch_size,
-                            **openrouter_timeouts,
-                        )
-                    elif is_colbert:
-                        # Use ColBERT model (returns list of 2D arrays)
-                        assert model is not None, "ColBERT model should be loaded"
-                        document_embeddings = model.encode(
-                            document_texts,
-                            batch_size=batch_size,
-                            is_query=False,  # Encoding documents
-                            show_progress_bar=True,
-                        )
-                    else:
-                        # Use SentenceTransformer
-                        assert model is not None, (
-                            "Model should be loaded for non-OpenRouter models"
-                        )
-                        document_embeddings = model.encode(
-                            document_texts,
-                            batch_size=batch_size,
-                            show_progress_bar=False,  # Disable progress bar for accurate timing
-                            normalize_embeddings=True,
-                            convert_to_numpy=True,
-                            **passage_encode_kwargs,  # Pass model-specific encode parameters
-                        )
-                    embedding_dimension = validate_embeddings(
-                        document_embeddings, len(documents), is_colbert=is_colbert
-                    )
-                except Exception as e:  # noqa: BLE001 - isolate backend failures to this model
-                    error_type = type(e).__name__
-                    error_msg = str(e)
-                    console.print(
-                        f"\n⚠️  [red bold]Error generating document embeddings for '{model_id}' ({error_type}):[/red bold]"
-                    )
-                    if "HTTPError" in error_type or "requests" in str(
-                        type(e).__module__
-                    ):
                         console.print(
-                            "   [yellow]API request failed. Please check the model ID and your API credentials.[/yellow]"
+                            f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
                         )
-                    console.print(f"   [dim]{error_msg[:500]}[/dim]")
+                        continue
+                else:
+                    # Check if this is a minishlab model - they don't work with MPS
+                    model_device = device
+                    if "minishlab" in model_id.lower():
+                        model_device = "cpu"
+                        if device == "mps":
+                            console.print(
+                                "   ⚠️  [yellow]Minishlab models don't support MPS, using CPU instead[/yellow]",
+                                style="dim",
+                            )
+
+                    # Build model loading kwargs
+                    model_kwargs: dict[str, object] = {
+                        "device": model_device,
+                        "trust_remote_code": True,
+                    }
+
+                    # Check if this is a Snowflake model - they require xformers by default
+                    # but we can disable memory efficient attention to avoid this dependency
+                    if "snowflake" in model_id.lower():
+                        model_kwargs["config_kwargs"] = {
+                            "use_memory_efficient_attention": False
+                        }
+                        console.print(
+                            "   ⚠️  [yellow]Snowflake model: disabling xformers requirement[/yellow]",
+                            style="dim",
+                        )
+
+                    console.print("   Loading model...", style="cyan")
+                    try:
+                        model = SentenceTransformer(model_id, **model_kwargs)
+                        if repair_snowflake_attention_mask(model, model_id):
+                            console.print(
+                                "   ⚠️  [yellow]Snowflake model: restored attention mask helper[/yellow]",
+                                style="dim",
+                            )
+                        if repair_snowflake_buffers(model, model_id):
+                            console.print(
+                                "   ⚠️  [yellow]Snowflake model: rebuilt position/rotary buffers[/yellow]",
+                                style="dim",
+                            )
+                        memory_after_model_mb = get_memory_usage_mb()
+                        model_memory_mb = max(
+                            0.0, memory_after_model_mb - memory_before_mb
+                        )
+                        console.print(
+                            f"   ✓ Model loaded (memory: [yellow]{model_memory_mb:.1f} MB[/yellow])",
+                            style="cyan",
+                        )
+                    except FileNotFoundError as e:
+                        if "huggingface" in str(e) and "cache" in str(e):
+                            console.print(
+                                f"\n❌ [red]Error loading model {model_id}:[/red]",
+                                style="bold",
+                            )
+                            console.print(
+                                "   [yellow]HuggingFace cache is corrupted for this model.[/yellow]"
+                            )
+                            console.print("\n   To fix this, run:")
+                            console.print(
+                                f"   [cyan]rm -rf ~/.cache/huggingface/modules/transformers_modules/{model_id.replace('/', '/')}*[/cyan]"
+                            )
+                            console.print(
+                                f"   [cyan]rm -rf ~/.cache/huggingface/hub/models--{model_id.replace('/', '--')}*[/cyan]"
+                            )
+                            console.print("\n   Then run the script again.\n")
+                            raise
+                        else:
+                            raise
+                    except OSError as e:
+                        error_msg = str(e)
+                        console.print(
+                            f"\n⚠️  [red bold]Error loading model '{model_id}':[/red bold]"
+                        )
+                        if (
+                            "not a valid model identifier" in error_msg
+                            or "Repository Not Found" in error_msg
+                        ):
+                            console.print(
+                                "   [yellow]Model not found on HuggingFace Hub.[/yellow]"
+                            )
+                            console.print(
+                                "   [dim]Please verify the model ID is correct and accessible.[/dim]"
+                            )
+                            console.print(
+                                "   [dim]If this is a private/gated model, ensure you are logged in via 'huggingface-cli login'.[/dim]"
+                            )
+                        else:
+                            console.print(f"   [yellow]{error_msg}[/yellow]")
+                        console.print(
+                            f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
+                        )
+                        continue
+                    except ValueError as e:
+                        error_msg = str(e)
+                        # Check for ColBERT model loaded as SentenceTransformer
+                        if "MaxSim" in error_msg and "SimilarityFunction" in error_msg:
+                            console.print(
+                                "\n❌ [bold red]ColBERT model misconfiguration detected![/bold red]"
+                            )
+                            console.print(
+                                f"   Model [cyan]'{model_id}'[/cyan] is a ColBERT late-interaction model."
+                            )
+                            console.print(
+                                "   It uses MaxSim scoring and cannot be loaded as a standard SentenceTransformer.\n"
+                            )
+                            console.print(
+                                "   [bold yellow]To fix this, move the model to the 'embeddings.colbert' section in your config.yaml:[/bold yellow]\n"
+                            )
+                            console.print(
+                                f"   [green]embeddings:\n     colbert:\n       {model_name}: {model_id}[/green]\n"
+                            )
+                            console.print(
+                                "   [dim]ColBERT models will then be loaded via PyLate with proper MaxSim support.[/dim]"
+                            )
+                        else:
+                            console.print(
+                                f"\n⚠️  [red bold]ValueError loading model '{model_id}':[/red bold]"
+                            )
+                            console.print(f"   [yellow]{error_msg[:500]}[/yellow]")
+                        console.print(
+                            f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
+                        )
+                        continue
+                    except Exception as e:  # noqa: BLE001 - custom model code can raise arbitrary errors
+                        # Catch any other unexpected errors during model loading
+                        error_type = type(e).__name__
+                        error_msg = str(e)
+                        console.print(
+                            f"\n⚠️  [red bold]Unexpected error loading model '{model_id}' ({error_type}):[/red bold]"
+                        )
+                        console.print(f"   [yellow]{error_msg[:500]}[/yellow]")
+                        console.print(
+                            f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
+                        )
+                        continue
+
+                document_texts = [d["text"] for d in documents]
+
+                # Apply passage prefix if configured for this model (not used for ColBERT)
+                if passage_prefix and not is_colbert:
+                    document_texts = [passage_prefix + text for text in document_texts]
+
+                # Initialize memory tracking variables (may be updated below)
+                total_memory_mb = model_memory_mb if not use_openrouter else 0.0
+
+                # Check if document embeddings exist in cache
+                # ColBERT uses different storage format
+                if cached_document_data is not None:
+                    print_loading_cached("document embeddings")
+                    document_embeddings, doc_metadata = cached_document_data
+                    embedding_dimension = cached_dimension
+                    total_embed_time_ms = doc_metadata.get("total_embed_time_ms", 0)
+                    avg_embed_time_per_doc_ms = doc_metadata.get(
+                        "avg_embed_time_per_doc_ms", 0
+                    )
+                    # Load cached memory data if available
+                    if "peak_memory_mb" in doc_metadata:
+                        total_memory_mb = doc_metadata.get(
+                            "peak_memory_mb", model_memory_mb
+                        )
+                    if "model_memory_mb" in doc_metadata:
+                        model_memory_mb = doc_metadata.get(
+                            "model_memory_mb", model_memory_mb
+                        )
+                    # Store memory data for visualization (from cache)
+                    if (
+                        "peak_memory_mb" in doc_metadata
+                        and "model_memory_mb" in doc_metadata
+                        and not use_openrouter
+                    ):
+                        memory_data[model_name] = {
+                            "model_memory_mb": doc_metadata.get("model_memory_mb", 0.0),
+                            "peak_memory_mb": doc_metadata.get("peak_memory_mb", 0.0),
+                        }
+                    print_loaded_cached(
+                        "document embeddings",
+                        len(document_embeddings),
+                        f"(originally: [yellow]{total_embed_time_ms:.1f}ms[/yellow], [dim]{avg_embed_time_per_doc_ms:.2f}ms per doc[/dim])",
+                    )
+                    # Document embeddings loaded from cache, no need to save
+                    pending_doc_embeddings = None
+                else:
+                    print_generating("documents", len(documents))
+
+                    # Measure embedding time for documents (use perf_counter for higher precision)
+                    start_time = time.perf_counter()
+
+                    try:
+                        if use_openrouter:
+                            # Use OpenRouter API
+                            document_embeddings = get_openrouter_embeddings(
+                                document_texts,
+                                model=model_id,
+                                batch_size=openrouter_batch_size,
+                                **openrouter_timeouts,
+                            )
+                        elif is_colbert:
+                            # Use ColBERT model (returns list of 2D arrays)
+                            assert model is not None, "ColBERT model should be loaded"
+                            document_embeddings = model.encode(
+                                document_texts,
+                                batch_size=batch_size,
+                                is_query=False,  # Encoding documents
+                                show_progress_bar=True,
+                            )
+                        else:
+                            # Use SentenceTransformer
+                            assert model is not None, (
+                                "Model should be loaded for non-OpenRouter models"
+                            )
+                            document_embeddings = model.encode(
+                                document_texts,
+                                batch_size=batch_size,
+                                show_progress_bar=False,  # Disable progress bar for accurate timing
+                                normalize_embeddings=True,
+                                convert_to_numpy=True,
+                                **passage_encode_kwargs,  # Pass model-specific encode parameters
+                            )
+                        embedding_dimension = validate_embeddings(
+                            document_embeddings, len(documents), is_colbert=is_colbert
+                        )
+                    except Exception as e:  # noqa: BLE001 - isolate backend failures to this model
+                        error_type = type(e).__name__
+                        error_msg = str(e)
+                        console.print(
+                            f"\n⚠️  [red bold]Error generating document embeddings for '{model_id}' ({error_type}):[/red bold]"
+                        )
+                        if "HTTPError" in error_type or "requests" in str(
+                            type(e).__module__
+                        ):
+                            console.print(
+                                "   [yellow]API request failed. Please check the model ID and your API credentials.[/yellow]"
+                            )
+                        console.print(f"   [dim]{error_msg[:500]}[/dim]")
+                        console.print(
+                            f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
+                        )
+                        continue
+
+                    end_time = time.perf_counter()
+                    total_embed_time_ms = (end_time - start_time) * 1000
+                    avg_embed_time_per_doc_ms = total_embed_time_ms / len(documents)
+
+                    # Track peak memory after embedding (cap at 0 to handle GC fluctuations)
+                    peak_memory_mb = get_memory_usage_mb()
+                    total_memory_mb = max(0.0, peak_memory_mb - memory_before_mb)
+
+                    print_generated(
+                        "documents",
+                        len(documents),
+                        total_embed_time_ms,
+                        avg_embed_time_per_doc_ms,
+                    )
+
+                    # Prepare document metadata for caching (will be saved after all model processing succeeds)
+                    doc_metadata = {
+                        "project_id": cache_project_id,
+                        "dataset_id": dataset_id,
+                        "model_name": model_id,
+                        "data_type": "documents",
+                        "num_documents": len(documents),
+                        "total_embed_time_ms": total_embed_time_ms,
+                        "avg_embed_time_per_doc_ms": avg_embed_time_per_doc_ms,
+                        "model_memory_mb": model_memory_mb,
+                        "peak_memory_mb": total_memory_mb,
+                        "created_at": datetime.now(UTC).isoformat(),
+                        "batch_size": batch_size,
+                        "is_colbert": is_colbert,
+                    }
+                    # Track pending document embeddings to save after successful completion
+                    pending_doc_embeddings = PendingEmbeddingCache(
+                        embeddings=document_embeddings,
+                        cache_key=doc_cache_key,
+                        metadata=doc_metadata,
+                    )
+
+                if cached_query_data is None and not args.force_recompute:
+                    try:
+                        cached_query_data = load_cached_embeddings(
+                            query_cache_key,
+                            embeddings_dir,
+                            expected_count=len(queries),
+                            expected_metadata=query_cache_metadata,
+                            expected_dimension=embedding_dimension,
+                        )
+                    except (
+                        OSError,
+                        ValueError,
+                        TypeError,
+                        KeyError,
+                        EOFError,
+                        BadZipFile,
+                    ):
+                        pass
+
+                # ColBERT models use direct MaxSim scoring, skip Weaviate indexing
+                if is_colbert:
+                    # For ColBERT, we need to generate query embeddings and use pylate.rank.rerank
+                    query_texts = [q["query"] for q in queries]
+
+                    if cached_query_data is not None:
+                        print_loading_cached("query embeddings")
+                        query_embeddings, query_metadata = cached_query_data
+                        print_loaded_cached("query embeddings", len(query_embeddings))
+                        # Query embeddings loaded from cache, no need to save
+                        pending_query_embeddings = None
+                    else:
+                        print_generating("queries", len(queries))
+
+                        try:
+                            assert model is not None, "ColBERT model should be loaded"
+                            query_embeddings = model.encode(
+                                query_texts,
+                                batch_size=batch_size,
+                                is_query=True,  # Encoding queries
+                                show_progress_bar=True,
+                            )
+                            validate_embeddings(
+                                query_embeddings,
+                                len(queries),
+                                is_colbert=True,
+                                expected_dimension=embedding_dimension,
+                            )
+                        except Exception as e:  # noqa: BLE001 - isolate third-party ColBERT encoding failures
+                            error_type = type(e).__name__
+                            error_msg = str(e)
+                            console.print(
+                                f"\n⚠️  [red bold]Error generating query embeddings for '{model_id}' ({error_type}):[/red bold]"
+                            )
+                            console.print(f"   [dim]{error_msg[:500]}[/dim]")
+                            console.print(
+                                f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
+                            )
+                            continue
+
+                        print_generated_count("query embeddings", len(query_embeddings))
+
+                        # Prepare query metadata for caching (will be saved after all model processing succeeds)
+                        query_metadata = {
+                            "project_id": cache_project_id,
+                            "dataset_id": dataset_id,
+                            "model_name": model_id,
+                            "data_type": "queries",
+                            "num_queries": len(queries),
+                            "created_at": datetime.now(UTC).isoformat(),
+                            "batch_size": batch_size,
+                            "is_colbert": True,
+                        }
+                        # Track pending query embeddings to save after successful completion
+                        pending_query_embeddings = PendingEmbeddingCache(
+                            embeddings=query_embeddings,
+                            cache_key=query_cache_key,
+                            metadata=query_metadata,
+                        )
+
                     console.print(
-                        f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
+                        "   Creating Weaviate collection for BM25...", style="cyan"
                     )
-                    continue
+                    collection = resources.create_collection(
+                        f"{model_name}_ColBERT_BM25",
+                        properties=[
+                            Property(name="document_id", data_type=DataType.TEXT),
+                            Property(name="text", data_type=DataType.TEXT),
+                        ],
+                        vectorizer_config=None,
+                    )
 
-                end_time = time.perf_counter()
-                total_embed_time_ms = (end_time - start_time) * 1000
-                avg_embed_time_per_doc_ms = total_embed_time_ms / len(documents)
+                    # Index documents for BM25 (text only)
+                    print_indexing("documents (text only for BM25)", len(documents))
+                    index_weaviate_documents(collection, documents)
+                    print_indexed("documents", len(documents))
 
-                # Track peak memory after embedding (cap at 0 to handle GC fluctuations)
-                peak_memory_mb = get_memory_usage_mb()
-                total_memory_mb = max(0.0, peak_memory_mb - memory_before_mb)
+                    # Pre-compute all ColBERT MaxSim scores for efficiency
+                    console.print(
+                        "   Computing ColBERT MaxSim scores for all queries...",
+                        style="cyan",
+                    )
 
-                print_generated(
-                    "documents",
-                    len(documents),
-                    total_embed_time_ms,
-                    avg_embed_time_per_doc_ms,
+                    # Build document IDs list
+                    all_doc_ids = [doc["id"] for doc in documents]
+
+                    # Rerank all documents for each query using MaxSim
+                    # This gives us scores for all doc-query pairs
+                    reranked_results = pylate_rank.rerank(
+                        documents_ids=[all_doc_ids] * len(queries),
+                        queries_embeddings=query_embeddings,
+                        documents_embeddings=[document_embeddings] * len(queries),
+                    )
+
+                    # Convert reranked results to score dictionaries per query
+                    colbert_scores_per_query: list[dict[str, float]] = []
+                    for reranked in reranked_results:
+                        scores = {r["id"]: r["score"] for r in reranked}
+                        colbert_scores_per_query.append(scores)
+
+                    console.print(
+                        f"   ✓ Computed MaxSim scores for [green]{len(queries)}[/green] queries"
+                    )
+
+                    # Run experiments for different alpha values (hybrid search)
+                    for alpha in alpha_values:
+                        # Generate cache key for this specific eval configuration
+                        eval_cache_key = generate_eval_cache_key(
+                            cache_project_id,
+                            model_id,
+                            alpha,
+                            max_k,
+                            model_name,
+                            metric_k_values,
+                            cache_identity=cache_identity,
+                        )
+
+                        # Check if eval results already exist in cache
+                        if not args.force_recompute and eval_results_exist(
+                            eval_cache_key,
+                            evals_dir,
+                            expected_metadata=result_cache_metadata,
+                        ):
+                            print_loading_cached(f"eval results for alpha={alpha}")
+                            cached_result = load_eval_results(eval_cache_key, evals_dir)
+                            cached_result["model_short"] = model_name
+                            all_results.append(cached_result)
+                            continue
+
+                        console.print(
+                            f"   Testing ColBERT hybrid: [yellow]alpha={alpha}, max_k={max_k}[/yellow]"
+                        )
+
+                        # Collect per-query results
+                        all_retrieved_ids = []
+
+                        for i, query_data in enumerate(queries):
+                            query_text = query_data["query"]
+                            relevant_ids = query_data["relevant_ids"]
+
+                            # Get ColBERT scores for this query
+                            colbert_scores = colbert_scores_per_query[i]
+
+                            if alpha == 1.0:
+                                # Pure ColBERT (no BM25 needed)
+                                combined_scores = colbert_scores
+                            elif alpha == 0.0:
+                                # Pure BM25
+                                response = collection.query.bm25(
+                                    query=query_text,
+                                    query_properties=["text"],
+                                    limit=max_k,
+                                    return_metadata=weaviate.classes.query.MetadataQuery(
+                                        score=True
+                                    ),
+                                )
+                                combined_scores = {
+                                    cast(str, obj.properties["document_id"]): (
+                                        obj.metadata.score if obj.metadata else 0.0
+                                    )
+                                    for obj in response.objects
+                                }
+                            else:
+                                # Hybrid: combine ColBERT MaxSim + BM25
+                                # Get BM25 scores from Weaviate
+                                # Use configurable candidate limit to avoid performance issues with large corpora
+                                bm25_candidate_limit = config.get("search", {}).get(
+                                    "bm25_candidate_limit", 1000
+                                )
+                                # If limit is None or exceeds corpus size, use corpus size
+                                if bm25_candidate_limit is None:
+                                    bm25_limit = len(documents)
+                                else:
+                                    bm25_limit = min(
+                                        bm25_candidate_limit, len(documents)
+                                    )
+                                response = collection.query.bm25(
+                                    query=query_text,
+                                    query_properties=["text"],
+                                    limit=bm25_limit,
+                                    return_metadata=weaviate.classes.query.MetadataQuery(
+                                        score=True
+                                    ),
+                                )
+                                bm25_scores = {
+                                    cast(str, obj.properties["document_id"]): (
+                                        obj.metadata.score if obj.metadata else 0.0
+                                    )
+                                    for obj in response.objects
+                                }
+
+                                # Normalize scores to 0-1 range for fair combination
+                                def normalize_scores(
+                                    scores: dict[str, float],
+                                ) -> dict[str, float]:
+                                    if not scores:
+                                        return {}
+                                    max_score = max(scores.values())
+                                    min_score = min(scores.values())
+                                    if max_score == min_score:
+                                        return {k: 1.0 for k in scores}
+                                    return {
+                                        k: (v - min_score) / (max_score - min_score)
+                                        for k, v in scores.items()
+                                    }
+
+                                colbert_norm = normalize_scores(colbert_scores)
+                                bm25_norm = normalize_scores(bm25_scores)
+
+                                # Combine: alpha * semantic + (1 - alpha) * keyword
+                                all_doc_ids_set = set(colbert_norm.keys()) | set(
+                                    bm25_norm.keys()
+                                )
+                                combined_scores = {}
+                                for doc_id in all_doc_ids_set:
+                                    semantic = colbert_norm.get(doc_id, 0.0)
+                                    keyword = bm25_norm.get(doc_id, 0.0)
+                                    combined_scores[doc_id] = (
+                                        alpha * semantic + (1 - alpha) * keyword
+                                    )
+
+                            # Sort by score and get top-k
+                            sorted_docs = sorted(
+                                combined_scores.items(),
+                                key=lambda item: (-item[1], item[0]),
+                            )[:max_k]
+                            retrieved_ids = [doc_id for doc_id, _ in sorted_docs]
+                            all_retrieved_ids.append((retrieved_ids, relevant_ids))
+
+                        # Build result with metrics
+                        result: dict = {
+                            "model": model_id,
+                            "model_short": model_name,
+                            "alpha": alpha,
+                            "avg_embed_time_ms": avg_embed_time_per_doc_ms,
+                            "total_embed_time_ms": total_embed_time_ms,
+                            "num_queries": len(queries),
+                            "num_documents": len(documents),
+                        }
+
+                        # Compute all metrics using helper function
+                        result.update(
+                            compute_metrics(all_retrieved_ids, metric_k_values)
+                        )
+
+                        all_results.append(result)
+
+                        # Save eval results to cache
+                        saved_path = save_eval_results(
+                            result, eval_cache_key, evals_dir
+                        )
+                        print_saved_eval_to_cache(saved_path)
+
+                    # Store memory data for this model
+                    if model_name not in memory_data:
+                        memory_data[model_name] = {
+                            "model_memory_mb": model_memory_mb,
+                            "peak_memory_mb": total_memory_mb,
+                        }
+
+                    # All ColBERT processing succeeded - now save pending embeddings to cache
+                    if pending_doc_embeddings is not None:
+                        saved_path = save_colbert_embeddings(
+                            pending_doc_embeddings.embeddings,
+                            pending_doc_embeddings.cache_key,
+                            embeddings_dir,
+                            pending_doc_embeddings.metadata,
+                        )
+                        print_saved_to_cache(saved_path)
+
+                    if pending_query_embeddings is not None:
+                        saved_path = save_colbert_embeddings(
+                            pending_query_embeddings.embeddings,
+                            pending_query_embeddings.cache_key,
+                            embeddings_dir,
+                            pending_query_embeddings.metadata,
+                        )
+                        print_saved_to_cache(saved_path)
+
+                    resources.delete_collection(collection)
+
+                    continue  # Skip the standard Weaviate flow for ColBERT
+
+                console.print("   Creating Weaviate collection...", style="cyan")
+                collection = resources.create_collection(
+                    f"{model_name}_Vectors",
+                    properties=[
+                        Property(name="document_id", data_type=DataType.TEXT),
+                        Property(name="text", data_type=DataType.TEXT),
+                    ],
+                    vectorizer_config=None,  # We provide vectors manually
                 )
 
-                # Prepare document metadata for caching (will be saved after all model processing succeeds)
-                doc_metadata = {
-                    "project_id": cache_project_id,
-                    "dataset_id": dataset_id,
-                    "model_name": model_id,
-                    "data_type": "documents",
-                    "num_documents": len(documents),
-                    "total_embed_time_ms": total_embed_time_ms,
-                    "avg_embed_time_per_doc_ms": avg_embed_time_per_doc_ms,
-                    "model_memory_mb": model_memory_mb,
-                    "peak_memory_mb": total_memory_mb,
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "batch_size": batch_size,
-                    "is_colbert": is_colbert,
-                }
-                # Track pending document embeddings to save after successful completion
-                pending_doc_embeddings = PendingEmbeddingCache(
-                    embeddings=document_embeddings,
-                    cache_key=doc_cache_key,
-                    metadata=doc_metadata,
-                )
+                # Index documents (only once per model)
+                print_indexing("documents", len(documents))
+                index_weaviate_documents(collection, documents, document_embeddings)
 
-            if cached_query_data is None and not args.force_recompute:
-                try:
-                    cached_query_data = load_cached_embeddings(
-                        query_cache_key,
-                        embeddings_dir,
-                        expected_count=len(queries),
-                        expected_metadata=query_cache_metadata,
-                        expected_dimension=embedding_dimension,
-                    )
-                except (OSError, ValueError, TypeError, KeyError, EOFError, BadZipFile):
-                    pass
+                print_indexed("documents", len(documents))
 
-            # ColBERT models use direct MaxSim scoring, skip Weaviate indexing
-            if is_colbert:
-                # For ColBERT, we need to generate query embeddings and use pylate.rank.rerank
+                # Generate or load query embeddings
                 query_texts = [q["query"] for q in queries]
+
+                # Apply query prefix if configured for this model
+                if query_prefix:
+                    query_texts_prefixed = [query_prefix + text for text in query_texts]
+                else:
+                    query_texts_prefixed = query_texts
 
                 if cached_query_data is not None:
                     print_loading_cached("query embeddings")
@@ -1245,29 +1569,49 @@ def main() -> int:
                     print_generating("queries", len(queries))
 
                     try:
-                        assert model is not None, "ColBERT model should be loaded"
-                        query_embeddings = model.encode(
-                            query_texts,
-                            batch_size=batch_size,
-                            is_query=True,  # Encoding queries
-                            show_progress_bar=True,
-                        )
+                        if use_openrouter:
+                            # Use OpenRouter API
+                            query_embeddings = get_openrouter_embeddings(
+                                query_texts_prefixed,
+                                model=model_id,
+                                batch_size=openrouter_batch_size,
+                                **openrouter_timeouts,
+                            )
+                        else:
+                            # Use SentenceTransformer
+                            assert model is not None, (
+                                "Model should be loaded for non-OpenRouter models"
+                            )
+                            query_embeddings = model.encode(
+                                query_texts_prefixed,
+                                batch_size=batch_size,
+                                show_progress_bar=True,
+                                normalize_embeddings=True,
+                                convert_to_numpy=True,
+                                **query_encode_kwargs,  # Pass model-specific encode parameters
+                            )
                         validate_embeddings(
                             query_embeddings,
                             len(queries),
-                            is_colbert=True,
                             expected_dimension=embedding_dimension,
                         )
-                    except Exception as e:  # noqa: BLE001 - isolate third-party ColBERT encoding failures
+                    except Exception as e:  # noqa: BLE001 - isolate backend failures and clean its collection
                         error_type = type(e).__name__
                         error_msg = str(e)
                         console.print(
                             f"\n⚠️  [red bold]Error generating query embeddings for '{model_id}' ({error_type}):[/red bold]"
                         )
+                        if "HTTPError" in error_type or "requests" in str(
+                            type(e).__module__
+                        ):
+                            console.print(
+                                "   [yellow]API request failed. Please check the model ID and your API credentials.[/yellow]"
+                            )
                         console.print(f"   [dim]{error_msg[:500]}[/dim]")
                         console.print(
                             f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
                         )
+                        resources.delete_collection(collection)
                         continue
 
                     print_generated_count("query embeddings", len(query_embeddings))
@@ -1280,8 +1624,9 @@ def main() -> int:
                         "data_type": "queries",
                         "num_queries": len(queries),
                         "created_at": datetime.now(UTC).isoformat(),
-                        "batch_size": batch_size,
-                        "is_colbert": True,
+                        "batch_size": openrouter_batch_size
+                        if use_openrouter
+                        else batch_size,
                     }
                     # Track pending query embeddings to save after successful completion
                     pending_query_embeddings = PendingEmbeddingCache(
@@ -1290,52 +1635,12 @@ def main() -> int:
                         metadata=query_metadata,
                     )
 
-                console.print(
-                    "   Creating Weaviate collection for BM25...", style="cyan"
-                )
-                collection = resources.create_collection(
-                    f"{model_name}_ColBERT_BM25",
-                    properties=[
-                        Property(name="document_id", data_type=DataType.TEXT),
-                        Property(name="text", data_type=DataType.TEXT),
-                    ],
-                    vectorizer_config=None,
-                )
+                # Get per-metric K values and determine max K for retrieval
+                metric_k_values = get_metric_k_values(config)
+                max_k = get_max_k(metric_k_values)
 
-                # Index documents for BM25 (text only)
-                print_indexing("documents (text only for BM25)", len(documents))
-                index_weaviate_documents(collection, documents)
-                print_indexed("documents", len(documents))
-
-                # Pre-compute all ColBERT MaxSim scores for efficiency
-                console.print(
-                    "   Computing ColBERT MaxSim scores for all queries...",
-                    style="cyan",
-                )
-
-                # Build document IDs list
-                all_doc_ids = [doc["id"] for doc in documents]
-
-                # Rerank all documents for each query using MaxSim
-                # This gives us scores for all doc-query pairs
-                reranked_results = pylate_rank.rerank(
-                    documents_ids=[all_doc_ids] * len(queries),
-                    queries_embeddings=query_embeddings,
-                    documents_embeddings=[document_embeddings] * len(queries),
-                )
-
-                # Convert reranked results to score dictionaries per query
-                colbert_scores_per_query: list[dict[str, float]] = []
-                for reranked in reranked_results:
-                    scores = {r["id"]: r["score"] for r in reranked}
-                    colbert_scores_per_query.append(scores)
-
-                console.print(
-                    f"   ✓ Computed MaxSim scores for [green]{len(queries)}[/green] queries"
-                )
-
-                # Run experiments for different alpha values (hybrid search)
-                for alpha in alpha_values:
+                # Run experiments for different alpha values
+                for alpha in config["search"]["alpha"]:
                     # Generate cache key for this specific eval configuration
                     eval_cache_key = generate_eval_cache_key(
                         cache_project_id,
@@ -1355,109 +1660,45 @@ def main() -> int:
                     ):
                         print_loading_cached(f"eval results for alpha={alpha}")
                         cached_result = load_eval_results(eval_cache_key, evals_dir)
+                        # Ensure model_short matches current config (in case of stale cache)
                         cached_result["model_short"] = model_name
                         all_results.append(cached_result)
                         continue
 
                     console.print(
-                        f"   Testing ColBERT hybrid: [yellow]alpha={alpha}, max_k={max_k}[/yellow]"
+                        f"   Testing: [yellow]alpha={alpha}, max_k={max_k}[/yellow]"
                     )
 
-                    # Collect per-query results
+                    # Collect per-query results at max_k
                     all_retrieved_ids = []
 
-                    for i, query_data in enumerate(queries):
+                    # Evaluate on all queries (using pre-computed embeddings)
+                    for query_data, query_embedding in zip(
+                        queries, query_embeddings, strict=True
+                    ):
                         query_text = query_data["query"]
                         relevant_ids = query_data["relevant_ids"]
 
-                        # Get ColBERT scores for this query
-                        colbert_scores = colbert_scores_per_query[i]
+                        # Perform hybrid search with max_k
+                        response = collection.query.hybrid(
+                            query=query_text,
+                            query_properties=["text"],
+                            vector=query_embedding.tolist(),
+                            alpha=alpha,
+                            limit=max_k,
+                        )
 
-                        if alpha == 1.0:
-                            # Pure ColBERT (no BM25 needed)
-                            combined_scores = colbert_scores
-                        elif alpha == 0.0:
-                            # Pure BM25
-                            response = collection.query.bm25(
-                                query=query_text,
-                                limit=max_k,
-                                return_metadata=weaviate.classes.query.MetadataQuery(
-                                    score=True
-                                ),
-                            )
-                            combined_scores = {
-                                cast(str, obj.properties["document_id"]): (
-                                    obj.metadata.score if obj.metadata else 0.0
-                                )
-                                for obj in response.objects
-                            }
-                        else:
-                            # Hybrid: combine ColBERT MaxSim + BM25
-                            # Get BM25 scores from Weaviate
-                            # Use configurable candidate limit to avoid performance issues with large corpora
-                            bm25_candidate_limit = config.get("search", {}).get(
-                                "bm25_candidate_limit", 1000
-                            )
-                            # If limit is None or exceeds corpus size, use corpus size
-                            if bm25_candidate_limit is None:
-                                bm25_limit = len(documents)
-                            else:
-                                bm25_limit = min(bm25_candidate_limit, len(documents))
-                            response = collection.query.bm25(
-                                query=query_text,
-                                limit=bm25_limit,
-                                return_metadata=weaviate.classes.query.MetadataQuery(
-                                    score=True
-                                ),
-                            )
-                            bm25_scores = {
-                                cast(str, obj.properties["document_id"]): (
-                                    obj.metadata.score if obj.metadata else 0.0
-                                )
-                                for obj in response.objects
-                            }
-
-                            # Normalize scores to 0-1 range for fair combination
-                            def normalize_scores(
-                                scores: dict[str, float],
-                            ) -> dict[str, float]:
-                                if not scores:
-                                    return {}
-                                max_score = max(scores.values())
-                                min_score = min(scores.values())
-                                if max_score == min_score:
-                                    return {k: 1.0 for k in scores}
-                                return {
-                                    k: (v - min_score) / (max_score - min_score)
-                                    for k, v in scores.items()
-                                }
-
-                            colbert_norm = normalize_scores(colbert_scores)
-                            bm25_norm = normalize_scores(bm25_scores)
-
-                            # Combine: alpha * semantic + (1 - alpha) * keyword
-                            all_doc_ids_set = set(colbert_norm.keys()) | set(
-                                bm25_norm.keys()
-                            )
-                            combined_scores = {}
-                            for doc_id in all_doc_ids_set:
-                                semantic = colbert_norm.get(doc_id, 0.0)
-                                keyword = bm25_norm.get(doc_id, 0.0)
-                                combined_scores[doc_id] = (
-                                    alpha * semantic + (1 - alpha) * keyword
-                                )
-
-                        # Sort by score and get top-k
-                        sorted_docs = sorted(
-                            combined_scores.items(), key=lambda x: x[1], reverse=True
-                        )[:max_k]
-                        retrieved_ids = [doc_id for doc_id, _ in sorted_docs]
+                        # Extract retrieved document IDs
+                        retrieved_ids = [
+                            cast(str, obj.properties["document_id"])
+                            for obj in response.objects
+                        ]
                         all_retrieved_ids.append((retrieved_ids, relevant_ids))
 
-                    # Build result with metrics
+                    # Build result with metrics at their respective K values
                     result: dict = {
-                        "model": model_id,
-                        "model_short": model_name,
+                        "model": model_id,  # Full model ID for reference
+                        "model_short": model_name,  # Short friendly name for display
                         "alpha": alpha,
                         "avg_embed_time_ms": avg_embed_time_per_doc_ms,
                         "total_embed_time_ms": total_embed_time_ms,
@@ -1474,16 +1715,16 @@ def main() -> int:
                     saved_path = save_eval_results(result, eval_cache_key, evals_dir)
                     print_saved_eval_to_cache(saved_path)
 
-                # Store memory data for this model
-                if model_name not in memory_data:
+                # Store memory data for this model (only once per model, not per config)
+                if model_name not in memory_data and not use_openrouter:
                     memory_data[model_name] = {
                         "model_memory_mb": model_memory_mb,
                         "peak_memory_mb": total_memory_mb,
                     }
 
-                # All ColBERT processing succeeded - now save pending embeddings to cache
+                # All model processing succeeded - now save pending embeddings to cache
                 if pending_doc_embeddings is not None:
-                    saved_path = save_colbert_embeddings(
+                    saved_path = save_embeddings(
                         pending_doc_embeddings.embeddings,
                         pending_doc_embeddings.cache_key,
                         embeddings_dir,
@@ -1492,7 +1733,7 @@ def main() -> int:
                     print_saved_to_cache(saved_path)
 
                 if pending_query_embeddings is not None:
-                    saved_path = save_colbert_embeddings(
+                    saved_path = save_embeddings(
                         pending_query_embeddings.embeddings,
                         pending_query_embeddings.cache_key,
                         embeddings_dir,
@@ -1501,8 +1742,7 @@ def main() -> int:
                     print_saved_to_cache(saved_path)
 
                 resources.delete_collection(collection)
-
-                # Cleanup ColBERT model
+            finally:
                 if model is not None:
                     del model
                     gc.collect()
@@ -1510,224 +1750,6 @@ def main() -> int:
                         torch.cuda.empty_cache()
                     if torch.backends.mps.is_available():
                         torch.mps.empty_cache()
-
-                continue  # Skip the standard Weaviate flow for ColBERT
-
-            console.print("   Creating Weaviate collection...", style="cyan")
-            collection = resources.create_collection(
-                f"{model_name}_Vectors",
-                properties=[
-                    Property(name="document_id", data_type=DataType.TEXT),
-                    Property(name="text", data_type=DataType.TEXT),
-                ],
-                vectorizer_config=None,  # We provide vectors manually
-            )
-
-            # Index documents (only once per model)
-            print_indexing("documents", len(documents))
-            index_weaviate_documents(collection, documents, document_embeddings)
-
-            print_indexed("documents", len(documents))
-
-            # Generate or load query embeddings
-            query_texts = [q["query"] for q in queries]
-
-            # Apply query prefix if configured for this model
-            if query_prefix:
-                query_texts_prefixed = [query_prefix + text for text in query_texts]
-            else:
-                query_texts_prefixed = query_texts
-
-            if cached_query_data is not None:
-                print_loading_cached("query embeddings")
-                query_embeddings, query_metadata = cached_query_data
-                print_loaded_cached("query embeddings", len(query_embeddings))
-                # Query embeddings loaded from cache, no need to save
-                pending_query_embeddings = None
-            else:
-                print_generating("queries", len(queries))
-
-                try:
-                    if use_openrouter:
-                        # Use OpenRouter API
-                        query_embeddings = get_openrouter_embeddings(
-                            query_texts_prefixed,
-                            model=model_id,
-                            batch_size=openrouter_batch_size,
-                            **openrouter_timeouts,
-                        )
-                    else:
-                        # Use SentenceTransformer
-                        assert model is not None, (
-                            "Model should be loaded for non-OpenRouter models"
-                        )
-                        query_embeddings = model.encode(
-                            query_texts_prefixed,
-                            batch_size=batch_size,
-                            show_progress_bar=True,
-                            normalize_embeddings=True,
-                            convert_to_numpy=True,
-                            **query_encode_kwargs,  # Pass model-specific encode parameters
-                        )
-                    validate_embeddings(
-                        query_embeddings,
-                        len(queries),
-                        expected_dimension=embedding_dimension,
-                    )
-                except Exception as e:  # noqa: BLE001 - isolate backend failures and clean its collection
-                    error_type = type(e).__name__
-                    error_msg = str(e)
-                    console.print(
-                        f"\n⚠️  [red bold]Error generating query embeddings for '{model_id}' ({error_type}):[/red bold]"
-                    )
-                    if "HTTPError" in error_type or "requests" in str(
-                        type(e).__module__
-                    ):
-                        console.print(
-                            "   [yellow]API request failed. Please check the model ID and your API credentials.[/yellow]"
-                        )
-                    console.print(f"   [dim]{error_msg[:500]}[/dim]")
-                    console.print(
-                        f"\n   [cyan]Skipping model '{model_name}' and continuing with remaining models...[/cyan]\n"
-                    )
-                    resources.delete_collection(collection)
-                    continue
-
-                print_generated_count("query embeddings", len(query_embeddings))
-
-                # Prepare query metadata for caching (will be saved after all model processing succeeds)
-                query_metadata = {
-                    "project_id": cache_project_id,
-                    "dataset_id": dataset_id,
-                    "model_name": model_id,
-                    "data_type": "queries",
-                    "num_queries": len(queries),
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "batch_size": openrouter_batch_size
-                    if use_openrouter
-                    else batch_size,
-                }
-                # Track pending query embeddings to save after successful completion
-                pending_query_embeddings = PendingEmbeddingCache(
-                    embeddings=query_embeddings,
-                    cache_key=query_cache_key,
-                    metadata=query_metadata,
-                )
-
-            # Get per-metric K values and determine max K for retrieval
-            metric_k_values = get_metric_k_values(config)
-            max_k = get_max_k(metric_k_values)
-
-            # Run experiments for different alpha values
-            for alpha in config["search"]["alpha"]:
-                # Generate cache key for this specific eval configuration
-                eval_cache_key = generate_eval_cache_key(
-                    cache_project_id,
-                    model_id,
-                    alpha,
-                    max_k,
-                    model_name,
-                    metric_k_values,
-                    cache_identity=cache_identity,
-                )
-
-                # Check if eval results already exist in cache
-                if not args.force_recompute and eval_results_exist(
-                    eval_cache_key, evals_dir, expected_metadata=result_cache_metadata
-                ):
-                    print_loading_cached(f"eval results for alpha={alpha}")
-                    cached_result = load_eval_results(eval_cache_key, evals_dir)
-                    # Ensure model_short matches current config (in case of stale cache)
-                    cached_result["model_short"] = model_name
-                    all_results.append(cached_result)
-                    continue
-
-                console.print(
-                    f"   Testing: [yellow]alpha={alpha}, max_k={max_k}[/yellow]"
-                )
-
-                # Collect per-query results at max_k
-                all_retrieved_ids = []
-
-                # Evaluate on all queries (using pre-computed embeddings)
-                for query_data, query_embedding in zip(
-                    queries, query_embeddings, strict=True
-                ):
-                    query_text = query_data["query"]
-                    relevant_ids = query_data["relevant_ids"]
-
-                    # Perform hybrid search with max_k
-                    response = collection.query.hybrid(
-                        query=query_text,
-                        vector=query_embedding.tolist(),
-                        alpha=alpha,
-                        limit=max_k,
-                    )
-
-                    # Extract retrieved document IDs
-                    retrieved_ids = [
-                        cast(str, obj.properties["document_id"])
-                        for obj in response.objects
-                    ]
-                    all_retrieved_ids.append((retrieved_ids, relevant_ids))
-
-                # Build result with metrics at their respective K values
-                result: dict = {
-                    "model": model_id,  # Full model ID for reference
-                    "model_short": model_name,  # Short friendly name for display
-                    "alpha": alpha,
-                    "avg_embed_time_ms": avg_embed_time_per_doc_ms,
-                    "total_embed_time_ms": total_embed_time_ms,
-                    "num_queries": len(queries),
-                    "num_documents": len(documents),
-                }
-
-                # Compute all metrics using helper function
-                result.update(compute_metrics(all_retrieved_ids, metric_k_values))
-
-                all_results.append(result)
-
-                # Save eval results to cache
-                saved_path = save_eval_results(result, eval_cache_key, evals_dir)
-                print_saved_eval_to_cache(saved_path)
-
-            # Store memory data for this model (only once per model, not per config)
-            if model_name not in memory_data and not use_openrouter:
-                memory_data[model_name] = {
-                    "model_memory_mb": model_memory_mb,
-                    "peak_memory_mb": total_memory_mb,
-                }
-
-            # All model processing succeeded - now save pending embeddings to cache
-            if pending_doc_embeddings is not None:
-                saved_path = save_embeddings(
-                    pending_doc_embeddings.embeddings,
-                    pending_doc_embeddings.cache_key,
-                    embeddings_dir,
-                    pending_doc_embeddings.metadata,
-                )
-                print_saved_to_cache(saved_path)
-
-            if pending_query_embeddings is not None:
-                saved_path = save_embeddings(
-                    pending_query_embeddings.embeddings,
-                    pending_query_embeddings.cache_key,
-                    embeddings_dir,
-                    pending_query_embeddings.metadata,
-                )
-                print_saved_to_cache(saved_path)
-
-            resources.delete_collection(collection)
-
-            # Cleanup model if it was loaded
-            if model is not None:
-                model.to("cpu")
-                del model
-                gc.collect()
-                if device == "cuda":
-                    torch.cuda.empty_cache()
-                if torch.backends.mps.is_available():
-                    torch.mps.empty_cache()
 
         output_dir = Path(config["output"]["results_dir"])
         output_dir.mkdir(exist_ok=True, parents=True)

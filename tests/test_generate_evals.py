@@ -240,7 +240,7 @@ def test_importing_generate_evals_does_not_register_signal_handlers(
     monkeypatch.setattr(
         signal, "signal", lambda signum, handler: calls.append((signum, handler))
     )
-    sys.modules.pop("generate_evals", None)
+    monkeypatch.delitem(sys.modules, "generate_evals", raising=False)
 
     importlib.import_module("generate_evals")
 

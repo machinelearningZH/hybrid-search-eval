@@ -50,3 +50,15 @@
 - Invalid evaluation configuration and embedded startup failure return status 1.
   The existing policy of skipping failed models is unchanged; defining partial
   and total model-failure statuses remains deferred in `PLAN.md`.
+- Lexical searches explicitly target `text`. Result-cache identities include
+  this restriction and ColBERT's ascending document-ID tie rule, so old results
+  are recomputed without deleting them or recomputing compatible embeddings.
+  An isolated offline Weaviate 1.39.7 check confirmed unrestricted BM25/hybrid
+  matched document IDs, while text-restricted searches excluded ID-only matches.
+- Generated query IDs now use `<source ID>::query_<zero-based position>` and
+  output follows source order. `generation_summary.json` records completeness;
+  partial/failed generation exits with status 1. Total failure leaves existing
+  Parquet files unchanged. Existing generated datasets are not migrated.
+- Loaded models are released in a per-model `finally` block before garbage
+  collection and device-cache cleanup. Moving a model to CPU before release is
+  unnecessary and could mask the original failure if the transfer raises.
